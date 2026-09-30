@@ -1,0 +1,252 @@
+{
+  "name": "Go++",
+  "scopeName": "source.gpp",
+  "embeddedLanguages": {
+    "text.html.basic": "html"
+  },
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#templates" },
+    { "include": "#annotations" },
+    { "include": "#declarations" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.gpp",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.gpp",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.gpp",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "include": "#escaped-interpolation-delimiters" },
+            { "include": "#interpolation" },
+            { "name": "constant.character.escape.gpp", "match": "\\\\(?:[abfnrtv\\\"'\\\\]|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3})" }
+          ]
+        },
+        {
+          "name": "string.quoted.single.gpp",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            { "name": "constant.character.escape.gpp", "match": "\\\\(?:[abfnrtv\\\"'\\\\]|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3})" }
+          ]
+        },
+        {
+          "name": "string.quoted.other.raw.gpp",
+          "begin": "`",
+          "end": "`",
+          "patterns": [
+            { "include": "#escaped-interpolation-delimiters" },
+            { "include": "#interpolation" }
+          ]
+        }
+      ]
+    },
+    "escaped-interpolation-delimiters": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.interpolation.gpp",
+          "match": "(?:\\{\\{\\{\\{|\\}\\}\\}\\})"
+        }
+      ]
+    },
+    "interpolation": {
+      "name": "meta.interpolation.gpp",
+      "begin": "\\{\\{",
+      "end": "\\}\\}",
+      "beginCaptures": {
+        "0": { "name": "punctuation.definition.interpolation.begin.gpp" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.interpolation.end.gpp" }
+      },
+      "patterns": [
+        { "include": "#code" }
+      ]
+    },
+    "templates": {
+      "patterns": [
+        {
+          "name": "meta.template.declaration.gpp",
+          "begin": "(\\btemplate\\b)(\\s+)([A-Za-z_][A-Za-z0-9_]*)(?:(?:[^@\\{]|@\\{[^}]*\\}))*(\\{)",
+          "end": "^\\s*\\}\\s*$",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.template.gpp" },
+            "3": { "name": "entity.name.function.template.gpp" },
+            "4": { "name": "punctuation.section.block.begin.gpp" }
+          },
+          "contentName": "text.html.basic",
+          "patterns": [
+            { "include": "#template-actions" },
+            { "include": "text.html.basic" }
+          ]
+        }
+      ]
+    },
+    "template-actions": {
+      "patterns": [
+        {
+          "name": "meta.embedded.template-action.gpp",
+          "begin": "\\{\\{",
+          "end": "\\}\\}",
+          "beginCaptures": {
+            "0": { "name": "punctuation.section.embedded.begin.gpp" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.section.embedded.end.gpp" }
+          },
+          "patterns": [
+            { "include": "#code" }
+          ]
+        }
+      ]
+    },
+    "annotations": {
+      "patterns": [
+        {
+          "name": "meta.annotation.use.gpp",
+          "begin": "@\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.annotation.begin.gpp" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.annotation.end.gpp" }
+          },
+          "patterns": [
+            { "include": "#code" }
+          ]
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "name": "meta.declaration.class.gpp",
+          "match": "\\b(class)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.gpp" },
+            "3": { "name": "entity.name.type.class.gpp" }
+          }
+        },
+        {
+          "name": "meta.declaration.enum.gpp",
+          "match": "\\b(enum)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "storage.type.enum.gpp" },
+            "3": { "name": "entity.name.type.enum.gpp" }
+          }
+        },
+        {
+          "name": "meta.declaration.function.gpp",
+          "match": "\\b(func)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "captures": {
+            "1": { "name": "storage.type.function.gpp" },
+            "3": { "name": "entity.name.function.gpp" }
+          }
+        }
+      ]
+    },
+    "code": {
+      "patterns": [
+        { "include": "#comments" },
+        { "include": "#strings" },
+        { "include": "#annotations" },
+        { "include": "#numbers" },
+        { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#constants" },
+        { "include": "#functions" },
+        { "include": "#operators" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.gpp",
+          "match": "(?<![A-Za-z0-9_.])(?:0[xX][0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|[0-9](?:_?[0-9])*(?:\\.[0-9](?:_?[0-9])*)?(?:[eE][+-]?[0-9](?:_?[0-9])*)?|\\.[0-9](?:_?[0-9])*)(?:i)?(?![A-Za-z0-9_])"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.gpp",
+          "match": "\\b(?:break|case|catch|continue|default|else|fallthrough|finally|for|goto|if|in|range|return|select|switch|throw|try)\\b"
+        },
+        {
+          "name": "storage.type.gpp",
+          "match": "\\b(?:annotation|chan|class|const|embed|enum|extend|func|import|interface|let|map|package|record|static|struct|template|type|var)\\b"
+        },
+        {
+          "name": "storage.modifier.gpp",
+          "match": "\\b(?:defer|go)\\b"
+        },
+        {
+          "name": "variable.language.gpp",
+          "match": "\\bthis\\b"
+        },
+        {
+          "name": "constant.language.gpp",
+          "match": "\\b(?:true|false|nil)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.gpp",
+          "match": "\\b(?:any|bool|byte|comparable|complex64|complex128|error|float32|float64|int|int8|int16|int32|int64|rune|string|uint|uint8|uint16|uint32|uint64|uintptr)\\b"
+        },
+        {
+          "name": "entity.name.type.gpp",
+          "match": "\\b\\p{Lu}[\\p{L}\\p{N}_]*\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.gpp",
+          "match": "\\biota\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.gpp",
+          "match": "\\b[\\p{L}_][\\p{L}\\p{N}_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.gpp",
+          "match": "(?:<<=|>>=|\\.\\.\\.|\\|\\|=|\\?\\?=|===|!==|:=|=>|==|!=|<=|>=|&&|\\|\\||\\?\\?|\\?\\.|\\+\\+|--|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<|>>|<-|&\\^|::|[+*/%<>=!&|^~\\-])"
+        }
+      ]
+    }
+  }
+}

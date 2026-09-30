@@ -1,0 +1,118 @@
+{
+  "name": "gpp-language",
+  "displayName": "Go++ Language Support",
+  "description": "Syntax highlighting and editor support for Go++ files.",
+  "version": "0.1.0",
+  "publisher": "gpp",
+  "license": "BSD-3-Clause",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:gpp",
+    "onCommand:gpp.runProject",
+    "onCommand:gpp.buildProject",
+    "onCommand:gpp.testProject",
+    "onCommand:gpp.showOutput"
+  ],
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "gpp.formatDocument",
+        "title": "Go++: Format Document",
+        "category": "Go++"
+      },
+      {
+        "command": "gpp.runProject",
+        "title": "Go++: Run Project",
+        "category": "Go++"
+      },
+      {
+        "command": "gpp.buildProject",
+        "title": "Go++: Build Project",
+        "category": "Go++"
+      },
+      {
+        "command": "gpp.testProject",
+        "title": "Go++: Test Project",
+        "category": "Go++"
+      },
+      {
+        "command": "gpp.showOutput",
+        "title": "Go++: Show Output",
+        "category": "Go++"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "gpp.formatDocument",
+          "when": "editorLangId == gpp",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "configurationDefaults": {
+      "[gpp]": {
+        "editor.defaultFormatter": "gpp.gpp-language"
+      }
+    },
+    "languages": [
+      {
+        "id": "gpp",
+        "aliases": [
+          "Go++",
+          "go++",
+          "gpp"
+        ],
+        "extensions": [
+          ".gpp",
+          ".gpp.tpl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gpp",
+        "scopeName": "source.gpp",
+        "path": "./syntaxes/gpp.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Go++",
+      "properties": {
+        "gpp.lsp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Go++ language server for diagnostics and editor features."
+        },
+        "gpp.lsp.command": {
+          "type": "string",
+          "default": "~/go/bin/gpp",
+          "description": "Go++ executable used for the language server and document formatting."
+        },
+        "gpp.lsp.args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "lsp"
+          ],
+          "description": "Arguments passed to the Go++ language-server command."
+        }
+      }
+    },
+    "snippets": [
+      {
+        "language": "gpp",
+        "path": "./snippets/gpp.json"
+      }
+    ]
+  }
+}

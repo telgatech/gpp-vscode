@@ -1,0 +1,4 @@
+.gitignore
+.vscode/**
+*.log
+README.md

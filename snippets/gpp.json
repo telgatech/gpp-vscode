@@ -1,0 +1,167 @@
+{
+  "Main function": {
+    "prefix": "main",
+    "body": [
+      "package main",
+      "",
+      "func main() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Go++ main function"
+  },
+  "Import block": {
+    "prefix": "imports",
+    "body": [
+      "import (",
+      "\t\"${1:fmt}\"",
+      "\t${2:demo.people}",
+      ")$0"
+    ],
+    "description": "Create a Go++ import block with Go and logical package imports"
+  },
+  "Program exit hook": {
+    "prefix": "atexit",
+    "body": [
+      "func atExit() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create the optional main package exit hook"
+  },
+  "Function": {
+    "prefix": "func",
+    "body": [
+      "func ${1:name}() ${2:string} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a valid Go++ function"
+  },
+  "Class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} {",
+      "\t${2:Field} ${3:string}",
+      "",
+      "\tfunc ${4:Method}() ${5:string} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Create a Go++ class with a field and method"
+  },
+  "If statement": {
+    "prefix": "if",
+    "body": [
+      "if ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Go++ if statement"
+  },
+  "For range loop": {
+    "prefix": "forr",
+    "body": [
+      "for _, ${1:item} := range ${2:items} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Go-style range loop"
+  },
+  "For condition loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:condition} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Go++ for loop"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Status} ${2:string} {",
+      "\t${3:Unknown}",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a Go++ enum"
+  },
+  "Extension": {
+    "prefix": "extend",
+    "body": [
+      "extend ${1:string} {",
+      "\tfunc ${2:Method}() ${3:string} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Create a Go++ extension block"
+  },
+  "Template": {
+    "prefix": "template",
+    "body": [
+      "template ${1:Page}(${2:data any}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a typed Go++ template declaration"
+  },
+  "Embed declaration": {
+    "prefix": "embed",
+    "body": [
+      "embed (",
+      "\t${1:Assets} \"${2:assets/}\"",
+      ")$0"
+    ],
+    "description": "Create a Go++ embedded resource declaration"
+  },
+  "Annotation declaration": {
+    "prefix": "annotation",
+    "body": [
+      "annotation ${1:Name}(${2:value string}) on ${3:class}",
+      "$0"
+    ],
+    "description": "Declare a typed Go++ annotation"
+  },
+  "Annotation use": {
+    "prefix": "@",
+    "body": [
+      "@{${1:Annotation}}$0"
+    ],
+    "description": "Apply a Go++ annotation"
+  },
+  "Try catch": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "\t$0",
+      "} catch ${1:e} {",
+      "\t${2:handle}",
+      "}"
+    ],
+    "description": "Create a Go++ try/catch block"
+  },
+  "Record literal": {
+    "prefix": "record",
+    "body": [
+      "record(${1:Field}: ${2:value})$0"
+    ],
+    "description": "Create an anonymous Go++ record literal"
+  },
+  "Safe access": {
+    "prefix": "safe",
+    "body": [
+      "${1:value}?.${2:Member}$0"
+    ],
+    "description": "Create an explicit Go++ safe member access"
+  },
+  "Lambda": {
+    "prefix": "lambda",
+    "body": [
+      "${1:value} => ${2:expression}$0"
+    ],
+    "description": "Create a Go++ lambda expression"
+  }
+}
