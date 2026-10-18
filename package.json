@@ -1,9 +1,9 @@
 {
-  "name": "gpp-language",
-  "displayName": "Go++ Language Support",
+  "name": "telga-goplusplus-vscode",
+  "displayName": "Go++ Programming Language",
   "description": "Syntax highlighting and editor support for Go++ files.",
-  "version": "0.1.0",
-  "publisher": "gpp",
+  "version": "0.1.3",
+  "publisher": "telgatech",
   "license": "BSD-3-Clause",
   "engines": {
     "vscode": "^1.85.0"
@@ -58,7 +58,7 @@
     },
     "configurationDefaults": {
       "[gpp]": {
-        "editor.defaultFormatter": "gpp.gpp-language"
+        "editor.defaultFormatter": "telgatech.telga-goplusplus-vscode"
       }
     },
     "languages": [

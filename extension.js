@@ -76,10 +76,11 @@ class GppLanguageServer {
         textDocument: {
           synchronization: { dynamicRegistration: false, willSave: false, didSave: true },
           completion: { completionItem: { snippetSupport: true } },
+          definition: { linkSupport: true },
           hover: { contentFormat: ["markdown", "plaintext"] }
         }
       },
-      clientInfo: { name: "Go++ VS Code", version: "0.1.0" }
+      clientInfo: { name: "Go++ VS Code", version: "0.1.3" }
     });
     if (!result) {
       throw new Error("Go++ language server returned no initialization result");
@@ -219,11 +220,9 @@ class GppLanguageServer {
   change(event) {
     this.notify("textDocument/didChange", {
       textDocument: { uri: event.document.uri.toString(), version: event.document.version },
-      contentChanges: event.contentChanges.map((change) => ({
-        range: change.range ? toLspRange(change.range) : undefined,
-        rangeLength: change.rangeLength,
-        text: change.text
-      }))
+      // The Go++ server advertises TextDocumentSyncKind.Full (1), so every
+      // change notification must contain the full current document text.
+      contentChanges: [{ text: event.document.getText() }]
     });
   }
 
@@ -304,8 +303,11 @@ function toRange(range = {}) {
 }
 
 function toLocation(location) {
-  if (!location || !location.uri || !location.range) return undefined;
-  return new vscode.Location(vscode.Uri.parse(location.uri), toRange(location.range));
+  if (!location) return undefined;
+  const uri = location.uri || location.targetUri;
+  const range = location.range || location.targetSelectionRange || location.targetRange;
+  if (!uri || !range) return undefined;
+  return new vscode.Location(vscode.Uri.parse(uri), toRange(range));
 }
 
 function flattenLocations(result) {
@@ -359,10 +361,36 @@ function registerLanguageFeatures(context, server) {
     }),
     vscode.languages.registerDefinitionProvider(selector, {
       provideDefinition(document, position) {
-        return server.requestWhenReady("textDocument/definition", {
+        const params = {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position)
-        }).then(flattenLocations);
+        };
+        return server.requestWhenReady("textDocument/definition", params).then((result) => {
+          const locations = flattenLocations(result);
+          if (locations.length) {
+            server.outputChannel.appendLine(
+              `Definition request ${document.uri.fsPath}:${position.line + 1}:${position.character + 1} returned ${locations.length} location(s)`
+            );
+            return locations;
+          }
+
+          const wordRange = document.getWordRangeAtPosition(position);
+          if (!wordRange) return [];
+          const name = document.getText(wordRange);
+          return server.requestWhenReady("workspace/symbol", { query: name }).then((symbols) => {
+            const fallback = (symbols || [])
+              .filter((symbol) => symbol.name === name)
+              .map((symbol) => toLocation(symbol.location))
+              .filter(Boolean);
+            server.outputChannel.appendLine(
+              `Definition request ${document.uri.fsPath}:${position.line + 1}:${position.character + 1} returned ${fallback.length} workspace symbol match(es) for ${name}`
+            );
+            return fallback;
+          });
+        }, (error) => {
+          server.outputChannel.appendLine(`Definition request failed: ${error.message}`);
+          throw error;
+        });
       }
     }),
     vscode.languages.registerReferenceProvider(selector, {

@@ -1,4 +1,4 @@
-# Go++ Language Support
+# Go++ Programming Language
 
 Production VS Code language support for Go++ (`.gpp` and `.gpp.tpl` files).
 
@@ -27,6 +27,7 @@ default it looks for `~/go/bin/gpp`; configure another executable if needed:
 ```
 
 Set `gpp.lsp.enabled` to `false` when using the extension as syntax-only support.
+Definition navigation requests and their results are logged in **View → Output → Go++**.
 
 ## Development
 
