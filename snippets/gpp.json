@@ -51,6 +51,26 @@
     ],
     "description": "Create a Go++ class with a field and method"
   },
+  "Class initializer": {
+    "prefix": "class-init",
+    "body": [
+      "func init() {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Create a class constructor hook that runs after fields are assigned"
+  },
+  "ORM model": {
+    "prefix": "orm-model",
+    "body": [
+      "class ${1:Todo} : orm.Model {",
+      "\tId int64",
+      "\t${2:Title} string",
+      "\t${3:DisplayLabel} string @{orm.Ignore}",
+      "}"
+    ],
+    "description": "Create an ORM model with inferred table, column, and primary-key mappings"
+  },
   "If statement": {
     "prefix": "if",
     "body": [
@@ -142,6 +162,25 @@
       "}"
     ],
     "description": "Create a Go++ try/catch block"
+  },
+  "HTTP generic request binding": {
+    "prefix": "http-bind",
+    "body": [
+      "func ${1:Create}FromRequest(ctx *http.Context) error @{http.POST(\"${2:/items}\")} {",
+      "\tinput := ctx.Bind[record(${3:Name}: ${4:string})]()",
+      "\treturn ctx.JSON(201, input)",
+      "}"
+    ],
+    "description": "Bind a request into a structural record with ctx.Bind[T]()"
+  },
+  "HTTP HTML response": {
+    "prefix": "http-html",
+    "body": [
+      "func ${1:Preview}(ctx *http.Context) error @{http.GET(\"${2:/preview}\")} {",
+      "\treturn ctx.HTML(200, ${3:\"Hello, Go++\"})",
+      "}"
+    ],
+    "description": "Return an HTML response from an annotated HTTP route"
   },
   "Record literal": {
     "prefix": "record",
