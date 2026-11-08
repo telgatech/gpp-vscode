@@ -2,7 +2,7 @@
   "name": "telga-goplusplus-vscode",
   "displayName": "Go++ Programming Language",
   "description": "Syntax highlighting and editor support for Go++ files.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "telgatech",
   "license": "BSD-3-Clause",
   "repository": {
@@ -18,7 +18,9 @@
     "onCommand:gpp.runProject",
     "onCommand:gpp.buildProject",
     "onCommand:gpp.testProject",
-    "onCommand:gpp.showOutput"
+    "onCommand:gpp.showOutput",
+    "onCommand:gpp.organizeImports",
+    "onCommand:gpp.getDiagnostics"
   ],
   "categories": [
     "Programming Languages"
@@ -49,6 +51,16 @@
         "command": "gpp.showOutput",
         "title": "Go++: Show Output",
         "category": "Go++"
+      },
+      {
+        "command": "gpp.organizeImports",
+        "title": "Go++: Organize Imports",
+        "category": "Go++"
+      },
+      {
+        "command": "gpp.getDiagnostics",
+        "title": "Go++: Refresh Diagnostics",
+        "category": "Go++"
       }
     ],
     "menus": {
@@ -63,6 +75,7 @@
     "configurationDefaults": {
       "[gpp]": {
         "editor.defaultFormatter": "telgatech.telga-goplusplus-vscode",
+        "editor.inlayHints.enabled": "off",
         "editor.quickSuggestions": {
           "other": true,
           "comments": false,
@@ -125,5 +138,8 @@
         "path": "./snippets/gpp.json"
       }
     ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
   }
 }

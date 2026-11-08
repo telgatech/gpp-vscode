@@ -4,6 +4,9 @@ const os = require("os");
 const path = require("path");
 const fs = require("fs/promises");
 const extensionVersion = require("./package.json").version;
+const { toLspDiagnostic, toVSCodeSeverity } = require("./lsp_diagnostic");
+const { normalizeCompletionResult } = require("./lsp_completion");
+const { decodeSemanticTokens } = require("./lsp_semantic_tokens");
 
 class GppLanguageServer {
   constructor(outputChannel) {
@@ -12,10 +15,15 @@ class GppLanguageServer {
     this.nextRequestId = 1;
     this.pending = new Map();
     this.changeTimers = new Map();
+    this.progress = new Map();
+    this.diagnosticResultIds = new Map();
+    this.workspaceDiagnosticUris = new Set();
+    this.workspaceDiagnosticTimer = null;
     this.documentListeners = [];
     this.diagnostics = vscode.languages.createDiagnosticCollection("gpp");
     this.outputChannel = outputChannel;
     this.initialized = false;
+    this.serverCapabilities = {};
     this.disposed = false;
     this.reportedFailure = false;
     this.ready = Promise.resolve(false);
@@ -62,6 +70,7 @@ class GppLanguageServer {
         this.open(document);
       }
     }
+      this.scheduleWorkspaceDiagnostics(0);
   }
 
   async initialize(workspaceFolder) {
@@ -74,15 +83,38 @@ class GppLanguageServer {
       rootUri: workspaceFolder ? workspaceFolder.uri.toString() : null,
       workspaceFolders: folders,
       capabilities: {
-        workspace: { workspaceFolders: true },
+        window: { workDoneProgress: true },
+        workspace: {
+          workspaceFolders: true,
+          configuration: true,
+          applyEdit: true,
+          diagnostics: { refreshSupport: true },
+          symbol: { resolveSupport: { properties: ["location.range"] } }
+        },
         textDocument: {
           synchronization: { dynamicRegistration: false, willSave: false, didSave: true },
-          completion: { completionItem: { snippetSupport: true } },
+          completion: { completionItem: {
+            snippetSupport: true,
+            dataSupport: true,
+            resolveSupport: { properties: ["detail", "documentation", "additionalTextEdits"] }
+          } },
           definition: { linkSupport: true },
+          typeDefinition: { linkSupport: true },
+          implementation: { linkSupport: true },
+          documentHighlight: {},
+          documentRangeFormatting: { rangesSupport: true },
+          foldingRange: {},
+          selectionRange: {},
+          documentLink: { linkSupport: true, resolveSupport: { properties: ["target", "tooltip"] } },
+          inlayHint: { resolveSupport: { properties: ["tooltip", "textEdits"] } },
+          codeLens: { resolveSupport: { properties: ["command"] } },
+          callHierarchy: {},
+          typeHierarchy: {},
           hover: { contentFormat: ["markdown", "plaintext"] },
           publishDiagnostics: { dataSupport: true, relatedInformation: true },
-          semanticTokens: { requests: { full: true, range: false }, tokenTypes: semanticTokenTypes, tokenModifiers: semanticTokenModifiers, formats: ["relative"], overlappingTokenSupport: false, multilineTokenSupport: false },
-          codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ["quickfix"] } }, dataSupport: true }
+          diagnostic: { relatedDocumentSupport: true },
+          semanticTokens: { requests: { full: { delta: true }, range: true }, tokenTypes: semanticTokenTypes, tokenModifiers: semanticTokenModifiers, formats: ["relative"], overlappingTokenSupport: false, multilineTokenSupport: false },
+          codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ["quickfix", "source.fixAll", "source.organizeImports", "refactor"] } }, dataSupport: true }
         }
       },
       clientInfo: { name: "Go++ VS Code", version: extensionVersion }
@@ -91,6 +123,48 @@ class GppLanguageServer {
       throw new Error("Go++ language server returned no initialization result");
     }
     this.initialized = true;
+    const serverInfo = result.serverInfo;
+    const capabilities = result.capabilities || {};
+    this.serverCapabilities = capabilities;
+    const featureCapabilities = {
+      hover: "hoverProvider",
+      completion: "completionProvider",
+      definition: "definitionProvider",
+      declaration: "declarationProvider",
+      "type definition": "typeDefinitionProvider",
+      implementation: "implementationProvider",
+      references: "referencesProvider",
+      "document highlights": "documentHighlightProvider",
+      "folding ranges": "foldingRangeProvider",
+      "selection ranges": "selectionRangeProvider",
+      "document links": "documentLinkProvider",
+      "inlay hints": "inlayHintProvider",
+      "code lenses": "codeLensProvider",
+      "call hierarchy": "callHierarchyProvider",
+      "type hierarchy": "typeHierarchyProvider",
+      rename: "renameProvider",
+      symbols: "documentSymbolProvider",
+      "workspace symbols": "workspaceSymbolProvider",
+      "semantic tokens": "semanticTokensProvider",
+      "pull diagnostics": "diagnosticProvider",
+      "server commands": "executeCommandProvider",
+      colors: "colorProvider",
+      "on-type formatting": "documentOnTypeFormattingProvider",
+      "range formatting": "documentRangeFormattingProvider",
+      "inline completions": "inlineCompletionProvider",
+      "inline values": "inlineValueProvider",
+      "linked editing": "linkedEditingRangeProvider",
+      "code actions": "codeActionProvider",
+      formatting: "documentFormattingProvider",
+      "signature help": "signatureHelpProvider"
+    };
+    const unsupported = Object.entries(featureCapabilities)
+      .filter(([, capability]) => !capabilities[capability])
+      .map(([feature]) => feature);
+    this.outputChannel.appendLine(`Language server ready${serverInfo?.version ? ` (${serverInfo.name || "gpp"} ${serverInfo.version})` : ""}.`);
+    if (unsupported.length) {
+      this.outputChannel.appendLine(`Language server does not advertise: ${unsupported.join(", ")}. Those features may be unavailable.`);
+    }
     this.notify("initialized", {});
     return true;
   }
@@ -108,7 +182,16 @@ class GppLanguageServer {
       }),
       vscode.workspace.onDidCloseTextDocument((document) => {
         if (isGoPlusDocument(document)) this.whenReady(() => this.close(document));
-      })
+      }),
+      vscode.workspace.onDidChangeWorkspaceFolders((event) => this.whenReady(() => {
+        this.notify("workspace/didChangeWorkspaceFolders", {
+          event: {
+            added: event.added.map((folder) => ({ uri: folder.uri.toString(), name: folder.name })),
+            removed: event.removed.map((folder) => ({ uri: folder.uri.toString(), name: folder.name }))
+          }
+        });
+        this.scheduleWorkspaceDiagnostics();
+      }))
     );
     context.subscriptions.push(...this.documentListeners);
   }
@@ -119,22 +202,51 @@ class GppLanguageServer {
     }).catch(() => {});
   }
 
-  request(method, params) {
+  request(method, params, cancellationToken) {
     if (!this.process || this.process.killed || this.disposed) {
       return Promise.reject(new Error("Go++ language server is unavailable"));
     }
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      if (cancellationToken?.isCancellationRequested) {
+        reject(new vscode.CancellationError());
+        return;
+      }
+      let cancellationSubscription;
+      const cleanup = () => {
+        clearTimeout(timer);
+        cancellationSubscription?.dispose();
+      };
+      const timer = setTimeout(() => {
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        this.pending.delete(id);
+        pending.reject(new Error(`Go++ language server timed out handling ${method}`));
+      }, 30000);
+      this.pending.set(id, {
+        resolve: (value) => { cleanup(); resolve(value); },
+        reject: (error) => { cleanup(); reject(error); }
+      });
+      if (typeof cancellationToken?.onCancellationRequested === "function") {
+        cancellationSubscription = cancellationToken.onCancellationRequested(() => {
+          if (!this.pending.has(id)) return;
+          this.pending.delete(id);
+          this.notify("$/cancelRequest", { id });
+          cleanup();
+          reject(new vscode.CancellationError());
+        });
+      }
       if (!this.write({ jsonrpc: "2.0", id, method, params })) {
         this.pending.delete(id);
+        cleanup();
         reject(new Error("Go++ language server input is unavailable"));
       }
     });
   }
 
-  requestWhenReady(method, params) {
-    return this.ready.then((available) => available ? this.request(method, params) : null);
+  requestWhenReady(method, params, cancellationToken) {
+    if (cancellationToken?.isCancellationRequested) return Promise.reject(new vscode.CancellationError());
+    return this.ready.then((available) => available ? this.request(method, params, cancellationToken) : null);
   }
 
   notify(method, params) {
@@ -181,8 +293,13 @@ class GppLanguageServer {
   }
 
   handle(message) {
-    if (message.method === "textDocument/publishDiagnostics") {
-      this.publishDiagnostics(message.params);
+    if (message.method) {
+      this.handleServerMessage(message).catch((error) => {
+        this.outputChannel.appendLine(`Language server message ${message.method} failed: ${error.message}`);
+        if (message.id !== undefined && message.id !== null) {
+          this.write({ jsonrpc: "2.0", id: message.id, error: { code: -32603, message: error.message } });
+        }
+      });
       return;
     }
     if (message.id === undefined || message.id === null) return;
@@ -193,23 +310,136 @@ class GppLanguageServer {
     else pending.resolve(message.result);
   }
 
+  async handleServerMessage(message) {
+    const params = message.params || {};
+    switch (message.method) {
+      case "textDocument/publishDiagnostics":
+        this.publishDiagnostics(params);
+        return;
+      case "window/logMessage":
+        this.outputChannel.appendLine(`[gpp lsp] ${params.message || ""}`);
+        return;
+      case "window/showMessage":
+        if (params.type === 1) vscode.window.showErrorMessage(params.message || "Go++ language server error");
+        else if (params.type === 2) vscode.window.showWarningMessage(params.message || "Go++ language server warning");
+        return;
+      case "workspace/configuration":
+        this.write({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: (params.items || []).map((item) => item.section ? vscode.workspace.getConfiguration().get(item.section) : null)
+        });
+        return;
+      case "workspace/workspaceFolders":
+        this.write({ jsonrpc: "2.0", id: message.id, result: (vscode.workspace.workspaceFolders || []).map((folder) => ({ uri: folder.uri.toString(), name: folder.name })) });
+        return;
+      case "workspace/applyEdit": {
+        const applied = await vscode.workspace.applyEdit(toWorkspaceEdit(params.edit));
+        this.write({ jsonrpc: "2.0", id: message.id, result: { applied } });
+        return;
+      }
+      case "client/registerCapability":
+      case "client/unregisterCapability":
+      case "window/workDoneProgress/create":
+        this.write({ jsonrpc: "2.0", id: message.id, result: null });
+        return;
+      case "$/progress":
+        this.updateProgress(params);
+        return;
+      default:
+        if (message.id !== undefined && message.id !== null) {
+          this.write({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `Unsupported client request: ${message.method}` } });
+        }
+    }
+  }
+
+  updateProgress(params = {}) {
+    const key = JSON.stringify(params.token);
+    const value = params.value || {};
+    if (value.kind === "begin") {
+      this.progress.get(key)?.dispose();
+      this.progress.set(key, vscode.window.setStatusBarMessage(`Go++: ${value.title || "Working"}`));
+    } else if (value.kind === "report") {
+      this.progress.get(key)?.dispose();
+      this.progress.set(key, vscode.window.setStatusBarMessage(`Go++: ${value.message || "Working"}`));
+    } else if (value.kind === "end") {
+      this.progress.get(key)?.dispose();
+      this.progress.delete(key);
+    }
+  }
+
   publishDiagnostics(params = {}) {
     const uri = params.uri ? vscode.Uri.parse(params.uri) : undefined;
     if (!uri) return;
-    const diagnostics = (params.diagnostics || []).map((diagnostic) => {
+    this.diagnostics.set(uri, this.toDiagnostics(params.diagnostics));
+  }
+
+  scheduleWorkspaceDiagnostics(delay = 150) {
+    clearTimeout(this.workspaceDiagnosticTimer);
+    this.workspaceDiagnosticTimer = setTimeout(() => {
+      this.workspaceDiagnosticTimer = null;
+      this.pullWorkspaceDiagnostics().catch((error) => {
+        if (!this.disposed) this.outputChannel.appendLine(`Workspace diagnostics request failed: ${error.message}`);
+      });
+    }, delay);
+  }
+
+  async pullDocumentDiagnostics(document) {
+    if (!this.serverCapabilities.diagnosticProvider || !document || !isGoPlusDocument(document)) return;
+    const uri = document.uri.toString();
+    const report = await this.requestWhenReady("textDocument/diagnostic", {
+      textDocument: { uri },
+      previousResultId: this.diagnosticResultIds.get(uri)
+    });
+    if (!report) return;
+    if (report.resultId) this.diagnosticResultIds.set(uri, report.resultId);
+    if (report.kind === "full") this.diagnostics.set(document.uri, this.toDiagnostics(report.items));
+  }
+
+  async pullWorkspaceDiagnostics() {
+    if (!this.initialized || this.disposed || !this.serverCapabilities.diagnosticProvider?.workspaceDiagnostics) return;
+    const previousResultIds = Array.from(this.diagnosticResultIds, ([uri, value]) => ({ uri, value }));
+    const report = await this.requestWhenReady("workspace/diagnostic", { previousResultIds });
+    if (!report || !Array.isArray(report.items)) return;
+    const seen = new Set();
+    for (const item of report.items) {
+      if (!item.uri) continue;
+      const uri = vscode.Uri.parse(item.uri);
+      const key = uri.toString();
+      seen.add(key);
+      if (item.resultId) this.diagnosticResultIds.set(key, item.resultId);
+      if (item.kind === "full") this.diagnostics.set(uri, this.toDiagnostics(item.items));
+    }
+    for (const uri of this.workspaceDiagnosticUris) {
+      if (!seen.has(uri)) {
+        this.diagnostics.delete(vscode.Uri.parse(uri));
+        this.diagnosticResultIds.delete(uri);
+      }
+    }
+    this.workspaceDiagnosticUris = seen;
+  }
+
+  toDiagnostics(items) {
+    return (items || []).map((diagnostic) => {
       const range = toRange(diagnostic.range);
-      const severity = diagnostic.severity === 2
-        ? vscode.DiagnosticSeverity.Warning
-        : diagnostic.severity === 3
-          ? vscode.DiagnosticSeverity.Information
-          : vscode.DiagnosticSeverity.Error;
+      const severity = [
+        vscode.DiagnosticSeverity.Error,
+        vscode.DiagnosticSeverity.Warning,
+        vscode.DiagnosticSeverity.Information,
+        vscode.DiagnosticSeverity.Hint
+      ][toVSCodeSeverity(diagnostic.severity)];
       const result = new vscode.Diagnostic(range, diagnostic.message || "", severity);
       result.source = diagnostic.source || "gpp";
       if (diagnostic.code !== undefined) result.code = String(diagnostic.code);
       if (diagnostic.data !== undefined) result.data = diagnostic.data;
+      if (Array.isArray(diagnostic.relatedInformation)) {
+        result.relatedInformation = diagnostic.relatedInformation.map((info) => {
+          const location = toLocation(info.location);
+          return location ? new vscode.DiagnosticRelatedInformation(location, info.message || "") : undefined;
+        }).filter(Boolean);
+      }
       return result;
     });
-    this.diagnostics.set(uri, diagnostics);
   }
 
   open(document) {
@@ -220,6 +450,9 @@ class GppLanguageServer {
         version: document.version,
         text: document.getText()
       }
+    });
+    this.pullDocumentDiagnostics(document).catch((error) => {
+      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${document.uri}: ${error.message}`);
     });
   }
 
@@ -253,21 +486,32 @@ class GppLanguageServer {
   sendChange(change) {
     this.notify("textDocument/didChange", {
       textDocument: { uri: change.uri, version: change.version },
-      // The Go++ server advertises TextDocumentSyncKind.Full (1), so every
-      // change notification must contain the full current document text.
+      // The server advertises incremental sync. A change without a range is a
+      // valid full-document replacement, which keeps updates simple here.
       contentChanges: [{ text: change.text }]
     });
+    const document = vscode.workspace.textDocuments.find((item) => item.uri.toString() === change.uri);
+    if (document) this.pullDocumentDiagnostics(document).catch((error) => {
+      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${change.uri}: ${error.message}`);
+    });
+    this.scheduleWorkspaceDiagnostics();
   }
 
   save(document) {
     this.flushChange(document);
     this.notify("textDocument/didSave", { textDocument: { uri: document.uri.toString() } });
+    this.pullDocumentDiagnostics(document).catch((error) => {
+      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${document.uri}: ${error.message}`);
+    });
+    this.scheduleWorkspaceDiagnostics();
   }
 
   close(document) {
     this.flushChange(document);
     this.notify("textDocument/didClose", { textDocument: { uri: document.uri.toString() } });
     this.diagnostics.delete(document.uri);
+    this.diagnosticResultIds.delete(document.uri.toString());
+    this.scheduleWorkspaceDiagnostics();
   }
 
   fail(error) {
@@ -284,6 +528,7 @@ class GppLanguageServer {
   }
 
   dispose() {
+    clearTimeout(this.workspaceDiagnosticTimer);
     const processHandle = this.process;
     const shouldShutdown = Boolean(processHandle && !processHandle.killed && this.initialized);
     let shutdownId = null;
@@ -301,6 +546,8 @@ class GppLanguageServer {
     for (const pending of this.changeTimers.values()) clearTimeout(pending.timer);
     this.changeTimers.clear();
     this.diagnostics.dispose();
+    for (const progress of this.progress.values()) progress.dispose();
+    this.progress.clear();
     for (const [id, pending] of this.pending.entries()) {
       if (id !== shutdownId) pending.reject(new Error("Go++ language server stopped"));
     }
@@ -353,11 +600,95 @@ function flattenLocations(result) {
   return values.map(toLocation).filter(Boolean);
 }
 
+function toLSPHierarchyItem(item) {
+  return {
+    name: item.name, kind: item.kind, detail: item.detail, uri: item.uri.toString(),
+    range: toLspRange(item.range), selectionRange: toLspRange(item.selectionRange), data: item.data
+  };
+}
+
+function toVSCallHierarchyItem(item) {
+  const value = new vscode.CallHierarchyItem(
+    item.kind, item.name, item.detail || "", vscode.Uri.parse(item.uri), toRange(item.range), toRange(item.selectionRange)
+  );
+  value.data = item.data;
+  return value;
+}
+
+function toVSTypeHierarchyItem(item) {
+  const value = new vscode.TypeHierarchyItem(
+    item.kind, item.name, item.detail || "", vscode.Uri.parse(item.uri), toRange(item.range), toRange(item.selectionRange)
+  );
+  value.data = item.data;
+  return value;
+}
+
+function toSelectionRange(value) {
+  if (!value) return undefined;
+  return new vscode.SelectionRange(toRange(value.range), toSelectionRange(value.parent));
+}
+
+function toSemanticTokens(result) {
+  const builder = new vscode.SemanticTokensBuilder(semanticTokenLegend);
+  for (const token of decodeSemanticTokens(result, semanticTokenTypes.length)) {
+    builder.push(token.line, token.character, token.length, token.tokenType, token.tokenModifiers);
+  }
+  return builder.build();
+}
+
+function toWorkspaceEdit(value) {
+  const edit = new vscode.WorkspaceEdit();
+  if (value?.changes) {
+    for (const [uri, edits] of Object.entries(value.changes)) {
+      for (const change of edits || []) edit.replace(vscode.Uri.parse(uri), toRange(change.range), change.newText || "");
+    }
+  }
+  for (const change of value?.documentChanges || []) {
+    if (change.textDocument && Array.isArray(change.edits)) {
+      const uri = vscode.Uri.parse(change.textDocument.uri);
+      for (const item of change.edits) {
+        if (item.range) edit.replace(uri, toRange(item.range), item.newText || "");
+      }
+    } else if (change.kind === "create") {
+      edit.createFile(vscode.Uri.parse(change.uri), { overwrite: change.options?.overwrite, ignoreIfExists: change.options?.ignoreIfExists });
+    } else if (change.kind === "delete") {
+      edit.deleteFile(vscode.Uri.parse(change.uri), { recursive: change.options?.recursive, ignoreIfNotExists: change.options?.ignoreIfNotExists });
+    } else if (change.kind === "rename") {
+      edit.renameFile(vscode.Uri.parse(change.oldUri), vscode.Uri.parse(change.newUri), { overwrite: change.options?.overwrite, ignoreIfExists: change.options?.ignoreIfExists });
+    }
+  }
+  return edit;
+}
+
+function toCodeLensCommand(command, fallbackUri) {
+  return {
+    title: command.title || "Go++ references",
+    command: command.command,
+    arguments: (command.arguments || []).map((argument) => {
+      if (!argument || typeof argument !== "object" || !("position" in argument) && !argument.locations) return argument;
+      return {
+        uri: argument.uri ? vscode.Uri.parse(argument.uri) : fallbackUri,
+        position: toPosition(argument.position),
+        locations: flattenLocations(argument.locations)
+      };
+    })
+  };
+}
+
+function workspaceEditHasChanges(value) {
+  if (!value) return false;
+  if (Object.values(value.changes || {}).some((edits) => Array.isArray(edits) && edits.length > 0)) return true;
+  return Array.isArray(value.documentChanges) && value.documentChanges.length > 0;
+}
+
 function markdown(value) {
   if (!value) return undefined;
-  if (typeof value === "string") return new vscode.MarkdownString(value);
-  if (Array.isArray(value)) return new vscode.MarkdownString(value.map(markdownText).join("\n\n"));
-  return new vscode.MarkdownString(markdownText(value));
+  const text = typeof value === "string"
+    ? value
+    : Array.isArray(value)
+      ? value.map(markdownText).filter(Boolean).join("\n\n")
+      : markdownText(value);
+  return text.trim() ? new vscode.MarkdownString(text) : undefined;
 }
 
 function markdownText(value) {
@@ -368,14 +699,20 @@ function markdownText(value) {
 
 function registerLanguageFeatures(context, server) {
   const selector = [
-    { language: "gpp", scheme: "file" },
+    { language: "gpp" },
     { pattern: "**/*.gpp.tpl" }
   ];
   const pendingCompletions = new Map();
+  const completionPayloads = new WeakMap();
+  const codeActionPayloads = new WeakMap();
+  const workspaceSymbolPayloads = new WeakMap();
+  const documentLinkPayloads = new WeakMap();
+  const inlayHintPayloads = new WeakMap();
+  const codeLensPayloads = new WeakMap();
 
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(selector, {
-      provideCompletionItems(document, position, token) {
+      provideCompletionItems(document, position, _completionContext, token) {
         if (token.isCancellationRequested) return [];
         const key = document.uri.toString();
         const previous = pendingCompletions.get(key);
@@ -404,190 +741,496 @@ function registerLanguageFeatures(context, server) {
             server.requestWhenReady("textDocument/completion", {
               textDocument: { uri: key },
               position: toLspPosition(position)
-            }).then((result) => (result || []).map((item) => {
-              const completion = new vscode.CompletionItem(item.label, toCompletionItemKind(item.kind));
-              completion.detail = item.detail;
-              completion.documentation = markdown(item.documentation);
-              completion.deprecated = Boolean(item.deprecated);
-              if (item.insertText) completion.insertText = item.insertText;
-              return completion;
-            })).then(resolve, (error) => {
+            }, token).then((result) => {
+              const normalized = normalizeCompletionResult(result);
+              const completions = normalized.items.map((item) => {
+                const completion = new vscode.CompletionItem(item.label, toCompletionItemKind(item.kind));
+                completionPayloads.set(completion, item);
+                completion.detail = item.detail;
+                completion.documentation = markdown(item.documentation);
+                completion.deprecated = Boolean(item.deprecated);
+                completion.data = item.data;
+                if (item.sortText) completion.sortText = item.sortText;
+                if (item.filterText) completion.filterText = item.filterText;
+                const insertText = item.textEdit?.newText ?? item.insertText ?? item.label;
+                if (item.insertTextFormat === 2) completion.insertText = new vscode.SnippetString(insertText);
+                else if (insertText !== undefined) completion.insertText = insertText;
+                if (item.textEdit?.range) completion.range = item.textEdit.range.insert && item.textEdit.range.replace
+                  ? { inserting: toRange(item.textEdit.range.insert), replacing: toRange(item.textEdit.range.replace) }
+                  : toRange(item.textEdit.range);
+                if (item.additionalTextEdits) completion.additionalTextEdits = item.additionalTextEdits.map((edit) => vscode.TextEdit.replace(toRange(edit.range), edit.newText || ""));
+                return completion;
+              });
+              return normalized.isList
+                ? new vscode.CompletionList(completions, normalized.isIncomplete)
+                : completions;
+            }).then(resolve, (error) => {
+              if (token.isCancellationRequested || error instanceof vscode.CancellationError) {
+                resolve([]);
+                return;
+              }
               server.outputChannel.appendLine(`Completion request failed: ${error.message}`);
               resolve([]);
             });
           }, 100);
           pendingCompletions.set(key, pending);
         });
+      },
+      resolveCompletionItem(completion, token) {
+        const payload = completionPayloads.get(completion) || { label: completion.label, data: completion.data };
+        return server.requestWhenReady("completionItem/resolve", payload, token).then((resolved) => {
+          if (!resolved) return completion;
+          completionPayloads.set(completion, resolved);
+          if (!completion.detail && resolved.detail) completion.detail = resolved.detail;
+          completion.documentation = markdown(resolved.documentation) || completion.documentation;
+          completion.data = resolved.data;
+          if (resolved.additionalTextEdits) completion.additionalTextEdits = resolved.additionalTextEdits.map((edit) =>
+            vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")
+          );
+          return completion;
+        });
       }
     }, ".", "@"),
+    vscode.languages.registerInlineCompletionItemProvider(selector, {
+      provideInlineCompletionItems(document, position, _context, token) {
+        if (token.isCancellationRequested) return [];
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/inlineCompletion", {
+          textDocument: { uri: document.uri.toString() },
+          position: toLspPosition(position)
+        }, token).then((items) => (Array.isArray(items) ? items : items?.items || []).map((item) => {
+          const rawText = item.insertText;
+          const insertText = rawText && typeof rawText === "object" && rawText.kind === "snippet"
+            ? new vscode.SnippetString(rawText.value || "")
+            : rawText || "";
+          const completion = new vscode.InlineCompletionItem(insertText, item.range ? toRange(item.range) : undefined);
+          completion.filterText = item.filterText;
+          if (item.command?.command) completion.command = {
+            title: item.command.title || "Go++ completion",
+            command: item.command.command,
+            arguments: item.command.arguments || []
+          };
+          return completion;
+        })).catch((error) => {
+          if (token.isCancellationRequested || error instanceof vscode.CancellationError) return [];
+          server.outputChannel.appendLine(`Inline completion request failed: ${error.message}`);
+          return [];
+        });
+      }
+    }),
     vscode.languages.registerHoverProvider(selector, {
-      provideHover(document, position) {
+      provideHover(document, position, token) {
         server.flushChange(document);
         const params = {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position)
         };
-        return server.requestWhenReady("textDocument/hover", params).then(async (result) => {
-          if (result) {
-            return new vscode.Hover(markdown(result.contents), result.range ? toRange(result.range) : undefined);
-          }
-
-          const wordRange = document.getWordRangeAtPosition(position);
-          if (!wordRange) return undefined;
-          const name = document.getText(wordRange);
-          const symbols = await server.requestWhenReady("workspace/symbol", { query: name });
-          const match = (symbols || []).find((symbol) => symbol.name === name && symbol.location);
-          const location = toLocation(match?.location);
-          if (!location) return undefined;
-
-          const declaration = await server.requestWhenReady("textDocument/hover", {
-            textDocument: { uri: location.uri.toString() },
-            position: toLspPosition(location.range.start)
-          });
-          return declaration
-            ? new vscode.Hover(markdown(declaration.contents))
+        return server.requestWhenReady("textDocument/hover", params, token).then((result) => {
+          return result && markdown(result.contents)
+            ? new vscode.Hover(markdown(result.contents), result.range ? toRange(result.range) : undefined)
             : undefined;
+        }).catch((error) => {
+          if (token.isCancellationRequested || error instanceof vscode.CancellationError) return undefined;
+          server.outputChannel.appendLine(`Hover request failed for ${document.uri.fsPath}:${position.line + 1}:${position.character + 1}: ${error.message}`);
+          return undefined;
         });
       }
     }),
     vscode.languages.registerDefinitionProvider(selector, {
-      provideDefinition(document, position) {
+      provideDefinition(document, position, token) {
         server.flushChange(document);
         const params = {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position)
         };
-        return server.requestWhenReady("textDocument/definition", params).then((result) => {
-          const locations = flattenLocations(result);
-          if (locations.length) {
-            server.outputChannel.appendLine(
-              `Definition request ${document.uri.fsPath}:${position.line + 1}:${position.character + 1} returned ${locations.length} location(s)`
-            );
-            return locations;
-          }
-
-          const wordRange = document.getWordRangeAtPosition(position);
-          if (!wordRange) return [];
-          const name = document.getText(wordRange);
-          return server.requestWhenReady("workspace/symbol", { query: name }).then((symbols) => {
-            const fallback = (symbols || [])
-              .filter((symbol) => symbol.name === name)
-              .map((symbol) => toLocation(symbol.location))
-              .filter(Boolean);
-            server.outputChannel.appendLine(
-              `Definition request ${document.uri.fsPath}:${position.line + 1}:${position.character + 1} returned ${fallback.length} workspace symbol match(es) for ${name}`
-            );
-            return fallback;
-          });
-        }, (error) => {
+        return server.requestWhenReady("textDocument/definition", params, token).then(flattenLocations, (error) => {
+          if (token.isCancellationRequested || error instanceof vscode.CancellationError) return [];
           server.outputChannel.appendLine(`Definition request failed: ${error.message}`);
           throw error;
         });
       }
     }),
+    vscode.languages.registerDeclarationProvider(selector, {
+      provideDeclaration(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/declaration", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then(flattenLocations);
+      }
+    }),
+    vscode.languages.registerTypeDefinitionProvider(selector, {
+      provideTypeDefinition(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/typeDefinition", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then(flattenLocations);
+      }
+    }),
+    vscode.languages.registerImplementationProvider(selector, {
+      provideImplementation(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/implementation", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then(flattenLocations);
+      }
+    }),
+    vscode.languages.registerDocumentHighlightProvider(selector, {
+      provideDocumentHighlights(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/documentHighlight", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then((items) => (items || []).map((item) => new vscode.DocumentHighlight(
+          toRange(item.range), item.kind === 3 ? vscode.DocumentHighlightKind.Write : item.kind === 2 ? vscode.DocumentHighlightKind.Read : vscode.DocumentHighlightKind.Text
+        )));
+      }
+    }),
+    vscode.languages.registerFoldingRangeProvider(selector, {
+      provideFoldingRanges(document, _context, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/foldingRange", {
+          textDocument: { uri: document.uri.toString() }
+        }, token).then((items) => (items || []).map((item) => new vscode.FoldingRange(
+          item.startLine, item.endLine, item.kind === "comment" ? vscode.FoldingRangeKind.Comment : item.kind === "region" ? vscode.FoldingRangeKind.Region : undefined
+        )));
+      }
+    }),
+    vscode.languages.registerSelectionRangeProvider(selector, {
+      provideSelectionRanges(document, positions, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/selectionRange", {
+          textDocument: { uri: document.uri.toString() }, positions: positions.map(toLspPosition)
+        }, token).then((items) => (items || []).map(toSelectionRange));
+      }
+    }),
+    vscode.languages.registerDocumentLinkProvider(selector, {
+      provideDocumentLinks(document, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/documentLink", {
+          textDocument: { uri: document.uri.toString() }
+        }, token).then((items) => (items || []).map((item) => {
+          const link = new vscode.DocumentLink(toRange(item.range), item.target ? vscode.Uri.parse(item.target) : undefined);
+          link.tooltip = item.tooltip;
+          link.data = item.data;
+          documentLinkPayloads.set(link, item);
+          return link;
+        }));
+      },
+      resolveDocumentLink(link, token) {
+        const payload = documentLinkPayloads.get(link) || { range: toLspRange(link.range), data: link.data };
+        if (!payload) return link;
+        return server.requestWhenReady("documentLink/resolve", payload, token).then((resolved) => {
+          if (!resolved) return link;
+          documentLinkPayloads.set(link, resolved);
+          if (resolved.range) link.range = toRange(resolved.range);
+          if (resolved.target) link.target = vscode.Uri.parse(resolved.target);
+          if (resolved.tooltip) link.tooltip = resolved.tooltip;
+          link.data = resolved.data;
+          return link;
+        });
+      }
+    }),
+    vscode.languages.registerColorProvider(selector, {
+      provideDocumentColors(document, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/documentColor", {
+          textDocument: { uri: document.uri.toString() }
+        }, token).then((items) => (items || []).map((item) => new vscode.ColorInformation(
+          toRange(item.range), new vscode.Color(item.color.red, item.color.green, item.color.blue, item.color.alpha)
+        )));
+      },
+      provideColorPresentations(color, context, token) {
+        server.flushChange(context.document);
+        return server.requestWhenReady("textDocument/colorPresentation", {
+          textDocument: { uri: context.document.uri.toString() },
+          color: { red: color.red, green: color.green, blue: color.blue, alpha: color.alpha },
+          range: toLspRange(context.range)
+        }, token).then((items) => (items || []).map((item) => {
+          const presentation = new vscode.ColorPresentation(item.label || "");
+          if (item.textEdit) presentation.textEdit = vscode.TextEdit.replace(toRange(item.textEdit.range), item.textEdit.newText || "");
+          if (item.additionalTextEdits) presentation.additionalTextEdits = item.additionalTextEdits.map((edit) =>
+            vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")
+          );
+          return presentation;
+        }));
+      }
+    }),
+    vscode.languages.registerInlayHintsProvider(selector, {
+      provideInlayHints(document, range, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/inlayHint", {
+          textDocument: { uri: document.uri.toString() }, range: toLspRange(range)
+        }, token).then((items) => {
+          const hints = items || [];
+          return hints.map((item) => {
+            const hint = new vscode.InlayHint(
+              toPosition(item.position), item.label, item.kind === 1 ? vscode.InlayHintKind.Type : vscode.InlayHintKind.Parameter
+            );
+            hint.paddingLeft = Boolean(item.paddingLeft);
+            hint.paddingRight = Boolean(item.paddingRight);
+            hint.tooltip = markdown(item.tooltip) || item.tooltip;
+            if (item.textEdits) hint.textEdits = item.textEdits.map((edit) =>
+              vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")
+            );
+            hint.data = item.data;
+            inlayHintPayloads.set(hint, item);
+            return hint;
+          });
+        });
+      },
+      resolveInlayHint(hint, token) {
+        const payload = inlayHintPayloads.get(hint) || {
+          position: { line: hint.position.line, character: hint.position.character },
+          label: typeof hint.label === "string" ? hint.label : hint.label.map((part) => part.value).join(""),
+          data: hint.data
+        };
+        if (!payload) return hint;
+        return server.requestWhenReady("inlayHint/resolve", payload, token).then((resolved) => {
+          if (!resolved) return hint;
+          inlayHintPayloads.set(hint, resolved);
+          if (resolved.tooltip) hint.tooltip = markdown(resolved.tooltip) || resolved.tooltip;
+          if (resolved.textEdits) hint.textEdits = resolved.textEdits.map((edit) =>
+            vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")
+          );
+          if (resolved.paddingLeft !== undefined) hint.paddingLeft = Boolean(resolved.paddingLeft);
+          if (resolved.paddingRight !== undefined) hint.paddingRight = Boolean(resolved.paddingRight);
+          hint.data = resolved.data;
+          return hint;
+        });
+      }
+    }),
+    vscode.languages.registerInlineValuesProvider(selector, {
+      provideInlineValues(document, viewPort, _context, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/inlineValue", {
+          textDocument: { uri: document.uri.toString() }, range: toLspRange(viewPort)
+        }, token).then((items) => (items || []).map((item) => {
+          const range = toRange(item.range);
+          if (item.expression !== undefined) return new vscode.InlineValueEvaluatableExpression(range, item.expression);
+          if (item.variableName !== undefined || item.caseSensitiveLookup !== undefined) {
+            return new vscode.InlineValueVariableLookup(range, item.variableName, item.caseSensitiveLookup);
+          }
+          return new vscode.InlineValueEvaluatableExpression(range);
+        }));
+      }
+    }),
+    vscode.languages.registerLinkedEditingRangeProvider(selector, {
+      provideLinkedEditingRanges(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/linkedEditingRange", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then((result) => result?.ranges?.length
+          ? new vscode.LinkedEditingRanges(result.ranges.map(toRange), result.wordPattern ? new RegExp(result.wordPattern) : undefined)
+          : undefined);
+      }
+    }),
+    vscode.languages.registerCodeLensProvider(selector, {
+      provideCodeLenses(document, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/codeLens", {
+          textDocument: { uri: document.uri.toString() }
+        }, token).then((items) => (items || []).map((item) => {
+          const lens = new vscode.CodeLens(toRange(item.range));
+          if (item.command) {
+            lens.command = toCodeLensCommand(item.command, document.uri);
+          }
+          lens.data = item.data;
+          codeLensPayloads.set(lens, item);
+          return lens;
+        }));
+      },
+      resolveCodeLens(lens, token) {
+        const payload = codeLensPayloads.get(lens) || { range: toLspRange(lens.range), data: lens.data };
+        if (!payload) return lens;
+        return server.requestWhenReady("codeLens/resolve", payload, token).then((resolved) => {
+          if (!resolved) return lens;
+          codeLensPayloads.set(lens, resolved);
+          if (resolved.range) lens.range = toRange(resolved.range);
+          if (resolved.command) {
+            const fallbackUri = payload.data?.uri ? vscode.Uri.parse(payload.data.uri) : undefined;
+            lens.command = toCodeLensCommand(resolved.command, fallbackUri);
+          }
+          lens.data = resolved.data;
+          return lens;
+        });
+      }
+    }),
+    vscode.languages.registerCallHierarchyProvider(selector, {
+      prepareCallHierarchy(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/prepareCallHierarchy", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then((items) => (items || []).map(toVSCallHierarchyItem));
+      },
+      provideIncomingCalls(item, token) {
+        return server.requestWhenReady("callHierarchy/incomingCalls", { item: toLSPHierarchyItem(item) }, token)
+          .then((items) => (items || []).map((call) => ({ from: toVSCallHierarchyItem(call.from), fromRanges: (call.fromRanges || []).map(toRange) })));
+      },
+      provideOutgoingCalls(item, token) {
+        return server.requestWhenReady("callHierarchy/outgoingCalls", { item: toLSPHierarchyItem(item) }, token)
+          .then((items) => (items || []).map((call) => ({ to: toVSCallHierarchyItem(call.to), fromRanges: (call.fromRanges || []).map(toRange) })));
+      }
+    }),
+    vscode.languages.registerTypeHierarchyProvider(selector, {
+      prepareTypeHierarchy(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/prepareTypeHierarchy", {
+          textDocument: { uri: document.uri.toString() }, position: toLspPosition(position)
+        }, token).then((items) => (items || []).map(toVSTypeHierarchyItem));
+      },
+      provideSupertypes(item, token) {
+        return server.requestWhenReady("typeHierarchy/supertypes", { item: toLSPHierarchyItem(item) }, token)
+          .then((items) => (items || []).map(toVSTypeHierarchyItem));
+      },
+      provideSubtypes(item, token) {
+        return server.requestWhenReady("typeHierarchy/subtypes", { item: toLSPHierarchyItem(item) }, token)
+          .then((items) => (items || []).map(toVSTypeHierarchyItem));
+      }
+    }),
     vscode.languages.registerReferenceProvider(selector, {
-      provideReferences(document, position, context) {
+      provideReferences(document, position, context, token) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/references", {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position),
           context: { includeDeclaration: context.includeDeclaration }
-        }).then(flattenLocations);
+        }, token).then(flattenLocations);
       }
     }),
     vscode.languages.registerRenameProvider(selector, {
-      provideRenameEdits(document, position, newName) {
+      prepareRename(document, position, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/prepareRename", {
+          textDocument: { uri: document.uri.toString() },
+          position: toLspPosition(position)
+        }, token).then((result) => result ? {
+          range: toRange(result.range || result),
+          placeholder: result.placeholder
+        } : undefined);
+      },
+      provideRenameEdits(document, position, newName, token) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/rename", {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position),
           newName
-        }).then((result) => {
-          const edit = new vscode.WorkspaceEdit();
-          for (const [uri, edits] of Object.entries(result?.changes || {})) {
-            for (const change of edits || []) edit.replace(vscode.Uri.parse(uri), toRange(change.range), change.newText || "");
-          }
-          return edit;
-        });
+        }, token).then((result) => toWorkspaceEdit(result));
       }
     }),
     vscode.languages.registerDocumentSymbolProvider(selector, {
-      provideDocumentSymbols(document) {
+      provideDocumentSymbols(document, token) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/documentSymbol", {
           textDocument: { uri: document.uri.toString() }
-        }).then((symbols) => (symbols || []).map((symbol) => toDocumentSymbol(symbol, document.uri)));
+        }, token).then((symbols) => (symbols || []).map((symbol) => toDocumentSymbol(symbol, document.uri)));
       }
     }),
     vscode.languages.registerDocumentSemanticTokensProvider(selector, {
-      provideDocumentSemanticTokens(document) {
+      provideDocumentSemanticTokens(document, token) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/semanticTokens/full", {
           textDocument: { uri: document.uri.toString() }
-        }).then((result) => {
-          const builder = new vscode.SemanticTokensBuilder(semanticTokenLegend);
-          const data = result?.data || [];
-          let line = 0;
-          let character = 0;
-          for (let index = 0; index + 4 < data.length; index += 5) {
-            const deltaLine = data[index];
-            line += deltaLine;
-            character = deltaLine === 0 ? character + data[index + 1] : data[index + 1];
-            const tokenType = semanticTokenTypes[data[index + 3]];
-            if (!tokenType) continue;
-            const modifiers = semanticTokenModifiers.filter((_, bit) => (data[index + 4] & (1 << bit)) !== 0);
-            builder.push(line, character, data[index + 2], tokenType, modifiers);
-          }
-          return builder.build();
-        });
+        }, token).then(toSemanticTokens);
+      }
+    }, semanticTokenLegend),
+    vscode.languages.registerDocumentRangeSemanticTokensProvider(selector, {
+      provideDocumentRangeSemanticTokens(document, range, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/semanticTokens/range", {
+          textDocument: { uri: document.uri.toString() }, range: toLspRange(range)
+        }, token).then(toSemanticTokens);
       }
     }, semanticTokenLegend),
     vscode.languages.registerCodeActionsProvider(selector, {
-      provideCodeActions(document, range, context) {
+      provideCodeActions(document, range, context, token) {
         server.flushChange(document);
-        const diagnostics = context.diagnostics.map((diagnostic) => ({
-          range: toLspRange(diagnostic.range),
-          severity: diagnostic.severity === vscode.DiagnosticSeverity.Warning ? 2 : diagnostic.severity === vscode.DiagnosticSeverity.Information ? 3 : 1,
-          code: diagnostic.code,
-          source: diagnostic.source,
-          message: diagnostic.message,
-          data: diagnostic.data
-        }));
+        const diagnostics = context.diagnostics.map(toLspDiagnostic);
+        const only = context.only ? [context.only.value] : undefined;
         return server.requestWhenReady("textDocument/codeAction", {
           textDocument: { uri: document.uri.toString() },
           range: toLspRange(range),
-          context: { diagnostics, only: context.only?.map((kind) => kind.value) }
-        }).then((actions) => (actions || []).map((action) => {
-          const codeAction = new vscode.CodeAction(action.title || "Go++ quick fix", vscode.CodeActionKind.QuickFix);
+          context: { diagnostics, only }
+        }, token).then((actions) => (actions || []).map((action) => {
+          const codeAction = new vscode.CodeAction(action.title || "Go++ action", new vscode.CodeActionKind(action.kind || "quickfix"));
+          codeActionPayloads.set(codeAction, action);
           codeAction.isPreferred = Boolean(action.isPreferred);
           codeAction.diagnostics = context.diagnostics.filter((diagnostic) =>
             (action.diagnostics || []).some((item) => String(item.code) === String(diagnostic.code) && item.message === diagnostic.message)
           );
-          if (action.edit?.changes) {
-            const edit = new vscode.WorkspaceEdit();
-            for (const [uri, edits] of Object.entries(action.edit.changes)) {
-              for (const change of edits || []) edit.replace(vscode.Uri.parse(uri), toRange(change.range), change.newText || "");
-            }
-            codeAction.edit = edit;
+          if (workspaceEditHasChanges(action.edit)) codeAction.edit = toWorkspaceEdit(action.edit);
+          if (typeof action.command === "string") {
+            codeAction.command = {
+              title: action.title || "Go++ action",
+              command: action.command,
+              arguments: action.arguments || []
+            };
+          } else if (action.command?.command) {
+            codeAction.command = {
+              title: action.command.title || action.title || "Go++ action",
+              command: action.command.command,
+              arguments: action.command.arguments || []
+            };
           }
           return codeAction;
         }));
+      },
+      resolveCodeAction(codeAction, token) {
+        const payload = codeActionPayloads.get(codeAction);
+        if (!payload) return codeAction;
+        return server.requestWhenReady("codeAction/resolve", payload, token).then((resolved) => {
+          if (!resolved) return codeAction;
+          codeActionPayloads.set(codeAction, resolved);
+          if (resolved.title) codeAction.title = resolved.title;
+          if (resolved.kind) codeAction.kind = new vscode.CodeActionKind(resolved.kind);
+          codeAction.isPreferred = Boolean(resolved.isPreferred);
+          if (workspaceEditHasChanges(resolved.edit)) codeAction.edit = toWorkspaceEdit(resolved.edit);
+          if (resolved.command?.command) codeAction.command = {
+            title: resolved.command.title || resolved.title || "Go++ action",
+            command: resolved.command.command,
+            arguments: resolved.command.arguments || []
+          };
+          return codeAction;
+        });
       }
-    }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix] }),
+    }, { providedCodeActionKinds: [vscode.CodeActionKind.QuickFix, vscode.CodeActionKind.RefactorExtract, vscode.CodeActionKind.SourceFixAll, vscode.CodeActionKind.SourceOrganizeImports] }),
     vscode.languages.registerWorkspaceSymbolProvider({
-      provideWorkspaceSymbols(query) {
-        return server.requestWhenReady("workspace/symbol", { query }).then((symbols) =>
+      provideWorkspaceSymbols(query, token) {
+        const workDoneToken = `workspace-symbol-${server.nextRequestId}:${query}`;
+        return server.requestWhenReady("workspace/symbol", { query, workDoneToken }, token).then((symbols) =>
           (symbols || []).filter((symbol) => symbol.location).map((symbol) => {
+            const uri = symbol.location.uri ? vscode.Uri.parse(symbol.location.uri) : undefined;
+            if (!uri) return undefined;
+            const location = symbol.location.range
+              ? toLocation(symbol.location)
+              : new vscode.Location(uri, new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0)));
             const result = new vscode.SymbolInformation(
               symbol.name || "",
               symbol.kind || vscode.SymbolKind.Namespace,
-              toLocation(symbol.location),
-              symbol.containerName
+              symbol.containerName || "",
+              location
             );
+            if (!symbol.location.range) result.location = { uri };
             if (symbol.deprecated) result.tags = [vscode.SymbolTag.Deprecated];
+            result.data = symbol.data;
+            workspaceSymbolPayloads.set(result, symbol);
             return result;
-          })
+          }).filter(Boolean)
         );
+      },
+      resolveWorkspaceSymbol(symbol, token) {
+        const payload = workspaceSymbolPayloads.get(symbol) || {
+          name: symbol.name,
+          kind: symbol.kind,
+          location: { uri: symbol.location.uri.toString() },
+          data: symbol.data
+        };
+        if (!payload) return symbol;
+        return server.requestWhenReady("workspaceSymbol/resolve", payload, token).then((resolved) => {
+          if (resolved?.location?.uri && resolved.location.range) symbol.location = toLocation(resolved.location);
+          if (resolved?.deprecated) symbol.tags = [vscode.SymbolTag.Deprecated];
+          symbol.data = resolved?.data;
+          workspaceSymbolPayloads.set(symbol, resolved || payload);
+          return symbol;
+        });
       }
     }),
     vscode.languages.registerDocumentFormattingEditProvider(selector, {
@@ -595,13 +1238,36 @@ function registerLanguageFeatures(context, server) {
         return formatDocumentWithGpp(document);
       }
     }),
+    vscode.languages.registerDocumentRangeFormattingEditProvider(selector, {
+      provideDocumentRangeFormattingEdits(document, range, options, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/rangeFormatting", {
+          textDocument: { uri: document.uri.toString() }, range: toLspRange(range), options
+        }, token).then((edits) => (edits || []).map((edit) => vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")));
+      },
+      provideDocumentRangesFormattingEdits(document, ranges, options, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/rangesFormatting", {
+          textDocument: { uri: document.uri.toString() }, ranges: ranges.map(toLspRange), options
+        }, token).then((edits) => (edits || []).map((edit) => vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")));
+      }
+    }),
+    vscode.languages.registerOnTypeFormattingEditProvider(selector, {
+      provideOnTypeFormattingEdits(document, position, character, options, token) {
+        server.flushChange(document);
+        return server.requestWhenReady("textDocument/onTypeFormatting", {
+          textDocument: { uri: document.uri.toString() },
+          position: toLspPosition(position), ch: character, options
+        }, token).then((edits) => (edits || []).map((edit) => vscode.TextEdit.replace(toRange(edit.range), edit.newText || "")));
+      }
+    }, "}", "\n"),
     vscode.languages.registerSignatureHelpProvider(selector, {
-      provideSignatureHelp(document, position) {
+      provideSignatureHelp(document, position, _context, token) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/signatureHelp", {
           textDocument: { uri: document.uri.toString() },
           position: toLspPosition(position)
-        }).then((result) => {
+        }, token).then((result) => {
           if (!result) return undefined;
           const help = new vscode.SignatureHelp();
           help.activeSignature = result.activeSignature || 0;
@@ -619,7 +1285,10 @@ function registerLanguageFeatures(context, server) {
 
   const watchers = [
     vscode.workspace.createFileSystemWatcher("**/*.gpp"),
-    vscode.workspace.createFileSystemWatcher("**/*.gpp.tpl")
+    vscode.workspace.createFileSystemWatcher("**/*.gpp.tpl"),
+    vscode.workspace.createFileSystemWatcher("**/*.go"),
+    vscode.workspace.createFileSystemWatcher("**/go.mod"),
+    vscode.workspace.createFileSystemWatcher("**/go.sum")
   ];
   for (const watcher of watchers) {
     watcher.onDidCreate((uri) => notifyFileChange(server, uri, 1));
@@ -627,6 +1296,57 @@ function registerLanguageFeatures(context, server) {
     watcher.onDidDelete((uri) => notifyFileChange(server, uri, 3));
     context.subscriptions.push(watcher);
   }
+
+  context.subscriptions.push(vscode.commands.registerCommand("gpp.showReferences", (payload) => {
+    if (!payload?.uri || !payload?.position) return;
+    return vscode.commands.executeCommand(
+      "editor.action.showReferences", payload.uri, payload.position, payload.locations || []
+    );
+  }));
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("gpp.organizeImports", async () => {
+      const document = vscode.window.activeTextEditor?.document;
+      if (!document || !isGoPlusDocument(document)) {
+        vscode.window.showInformationMessage("Open a Go++ document to organize imports.");
+        return;
+      }
+      if (!server.serverCapabilities.executeCommandProvider?.commands?.includes("gpp.organizeImports")) {
+        vscode.window.showWarningMessage("The Go++ language server does not support organize imports.");
+        return;
+      }
+      server.flushChange(document);
+      try {
+        const edit = await server.requestWhenReady("workspace/executeCommand", {
+          command: "gpp.organizeImports", arguments: [document.uri.toString()]
+        });
+        if (edit) await vscode.workspace.applyEdit(toWorkspaceEdit(edit));
+      } catch (error) {
+        vscode.window.showErrorMessage(`Go++ organize imports failed: ${error.message}`);
+      }
+    }),
+    vscode.commands.registerCommand("gpp.getDiagnostics", async () => {
+      const document = vscode.window.activeTextEditor?.document;
+      if (!document || !isGoPlusDocument(document)) {
+        vscode.window.showInformationMessage("Open a Go++ document to refresh diagnostics.");
+        return;
+      }
+      if (!server.serverCapabilities.executeCommandProvider?.commands?.includes("gpp.getDiagnostics")) {
+        vscode.window.showWarningMessage("The Go++ language server does not support refreshing diagnostics.");
+        return;
+      }
+      server.flushChange(document);
+      try {
+        const diagnostics = await server.requestWhenReady("workspace/executeCommand", {
+          command: "gpp.getDiagnostics", arguments: [document.uri.toString()]
+        });
+        if (diagnostics) server.diagnostics.set(document.uri, server.toDiagnostics(diagnostics));
+        await vscode.commands.executeCommand("workbench.actions.view.problems");
+      } catch (error) {
+        vscode.window.showErrorMessage(`Go++ diagnostics request failed: ${error.message}`);
+      }
+    })
+  );
 
   context.subscriptions.push(vscode.commands.registerTextEditorCommand("gpp.formatDocument", async (editor) => {
     if (editor.document.languageId !== "gpp") return;
@@ -754,9 +1474,10 @@ function toCompletionItemKind(kind) {
 }
 
 function notifyFileChange(server, uri, type) {
-  server.whenReady(() => server.notify("workspace/didChangeWatchedFiles", {
-    changes: [{ uri: uri.toString(), type }]
-  }));
+  server.whenReady(() => {
+    server.notify("workspace/didChangeWatchedFiles", { changes: [{ uri: uri.toString(), type }] });
+    server.scheduleWorkspaceDiagnostics();
+  });
 }
 
 function toDocumentSymbol(symbol, uri) {

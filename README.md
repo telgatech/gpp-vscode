@@ -7,12 +7,12 @@ Production VS Code language support for Go++ (`.gpp` and `.gpp.tpl` files).
 - Syntax highlighting for Go-compatible syntax and Go++ extensions including classes, enums, extensions, records, annotations, lambdas, safe access, error fallback, interpolation in interpreted and raw strings, and HTML templates with Go template actions
 - Bracket matching, auto-closing pairs, indentation, and code folding
 - Snippets for declarations, control flow, annotations, records, templates, and expressions
-- Optional integration with the Go++ language server for diagnostics, semantic highlighting, completion, quick fixes, hover, navigation, rename, document and workspace symbols, and signature help
+- Optional integration with the Go++ language server for diagnostics, semantic highlighting, completion, hover, signature help, declarations, definitions, implementations, references, rename, document and workspace symbols, call and type hierarchy, inlay hints, folding, document links, linked editing, inline completions and values, colors, code lenses, quick fixes, and range/on-type formatting
 - Document formatting through the compiler's `gpp fmt --stdout` command, including unsaved editor buffers
 - Project commands for running, building, and testing from the Command Palette or VS Code Tasks
-- A Go++ output channel for language-server startup errors and compiler logs
+- A Go++ output channel for language-server startup errors, capability gaps, request failures, and compiler logs
 - Snippets for import blocks and the `atExit` program-exit hook
-- Workspace file watching so changes to closed `.gpp` and `.gpp.tpl` files refresh compiler diagnostics and indexes
+- Workspace file watching so changes to `.gpp`, `.gpp.tpl`, Go source, and Go module files refresh compiler diagnostics and indexes
 
 ## Language server
 
@@ -27,7 +27,7 @@ default it looks for `~/go/bin/gpp`; configure another executable if needed:
 ```
 
 Set `gpp.lsp.enabled` to `false` when using the extension as syntax-only support.
-Definition navigation requests and their results are logged in **View → Output → Go++**.
+Language-server capabilities and feature request errors are logged in **View → Output → Go++**.
 
 ## Development
 
