@@ -451,9 +451,6 @@ class GppLanguageServer {
         text: document.getText()
       }
     });
-    this.pullDocumentDiagnostics(document).catch((error) => {
-      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${document.uri}: ${error.message}`);
-    });
   }
 
   change(event) {
@@ -490,20 +487,14 @@ class GppLanguageServer {
       // valid full-document replacement, which keeps updates simple here.
       contentChanges: [{ text: change.text }]
     });
-    const document = vscode.workspace.textDocuments.find((item) => item.uri.toString() === change.uri);
-    if (document) this.pullDocumentDiagnostics(document).catch((error) => {
-      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${change.uri}: ${error.message}`);
-    });
-    this.scheduleWorkspaceDiagnostics();
+    // The server publishes diagnostics after applying a change. Pulling both
+    // document and workspace diagnostics here duplicates work and queues
+    // expensive requests ahead of interactive editor features.
   }
 
   save(document) {
     this.flushChange(document);
     this.notify("textDocument/didSave", { textDocument: { uri: document.uri.toString() } });
-    this.pullDocumentDiagnostics(document).catch((error) => {
-      if (!this.disposed) this.outputChannel.appendLine(`Diagnostics request failed for ${document.uri}: ${error.message}`);
-    });
-    this.scheduleWorkspaceDiagnostics();
   }
 
   close(document) {
@@ -511,7 +502,6 @@ class GppLanguageServer {
     this.notify("textDocument/didClose", { textDocument: { uri: document.uri.toString() } });
     this.diagnostics.delete(document.uri);
     this.diagnosticResultIds.delete(document.uri.toString());
-    this.scheduleWorkspaceDiagnostics();
   }
 
   fail(error) {
@@ -700,6 +690,7 @@ function markdownText(value) {
 function registerLanguageFeatures(context, server) {
   const selector = [
     { language: "gpp" },
+    { pattern: "**/*.gpp" },
     { pattern: "**/*.gpp.tpl" }
   ];
   const pendingCompletions = new Map();
@@ -1056,6 +1047,10 @@ function registerLanguageFeatures(context, server) {
         }));
       },
       resolveCodeLens(lens, token) {
+        // The server's code lenses carry a lightweight command. References are
+        // requested only when the user activates the lens, so resolving every
+        // lens cannot stall hover and other interactive LSP requests.
+        if (lens.command) return lens;
         const payload = codeLensPayloads.get(lens) || { range: toLspRange(lens.range), data: lens.data };
         if (!payload) return lens;
         return server.requestWhenReady("codeLens/resolve", payload, token).then((resolved) => {
@@ -1314,10 +1309,21 @@ function registerLanguageFeatures(context, server) {
     context.subscriptions.push(watcher);
   }
 
-  context.subscriptions.push(vscode.commands.registerCommand("gpp.showReferences", (payload) => {
+  context.subscriptions.push(vscode.commands.registerCommand("gpp.showReferences", async (payload) => {
     if (!payload?.uri || !payload?.position) return;
+    let locations = payload.locations || [];
+    if (locations.length === 0) {
+      const document = await vscode.workspace.openTextDocument(payload.uri);
+      server.flushChange(document);
+      const result = await server.requestWhenReady("textDocument/references", {
+        textDocument: { uri: document.uri.toString() },
+        position: toLspPosition(payload.position),
+        context: { includeDeclaration: false }
+      });
+      locations = flattenLocations(result || []);
+    }
     return vscode.commands.executeCommand(
-      "editor.action.showReferences", payload.uri, payload.position, payload.locations || []
+      "editor.action.showReferences", payload.uri, payload.position, locations
     );
   }));
 

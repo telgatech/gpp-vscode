@@ -2,7 +2,7 @@
   "name": "telga-goplusplus-vscode",
   "displayName": "GPP Programming Language",
   "description": "Syntax highlighting and editor support for GPP files.",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "publisher": "telgatech",
   "license": "BSD-3-Clause",
   "repository": {
