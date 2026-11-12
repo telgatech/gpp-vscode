@@ -8,7 +8,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a Go++ main function"
+    "description": "Create a GPP main function"
   },
   "Import block": {
     "prefix": "imports",
@@ -18,7 +18,7 @@
       "\t${2:demo.people}",
       ")$0"
     ],
-    "description": "Create a Go++ import block with Go and logical package imports"
+    "description": "Create a GPP import block with Go and logical package imports"
   },
   "Program exit hook": {
     "prefix": "atexit",
@@ -36,7 +36,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a valid Go++ function"
+    "description": "Create a valid GPP function"
   },
   "Class": {
     "prefix": "class",
@@ -49,7 +49,7 @@
       "\t}",
       "}"
     ],
-    "description": "Create a Go++ class with a field and method"
+    "description": "Create a GPP class with a field and method"
   },
   "Class initializer": {
     "prefix": "class-init",
@@ -78,7 +78,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a Go++ if statement"
+    "description": "Create a GPP if statement"
   },
   "For range loop": {
     "prefix": "forr",
@@ -96,7 +96,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a Go++ for loop"
+    "description": "Create a GPP for loop"
   },
   "Enum": {
     "prefix": "enum",
@@ -106,7 +106,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a Go++ enum"
+    "description": "Create a GPP enum"
   },
   "Extension": {
     "prefix": "extend",
@@ -117,7 +117,7 @@
       "\t}",
       "}"
     ],
-    "description": "Create a Go++ extension block"
+    "description": "Create a GPP extension block"
   },
   "Template": {
     "prefix": "template",
@@ -126,7 +126,7 @@
       "\t$0",
       "}"
     ],
-    "description": "Create a typed Go++ template declaration"
+    "description": "Create a typed GPP template declaration"
   },
   "Embed declaration": {
     "prefix": "embed",
@@ -135,7 +135,7 @@
       "\t${1:Assets} \"${2:assets/}\"",
       ")$0"
     ],
-    "description": "Create a Go++ embedded resource declaration"
+    "description": "Create a GPP embedded resource declaration"
   },
   "Annotation declaration": {
     "prefix": "annotation",
@@ -143,14 +143,14 @@
       "annotation ${1:Name}(${2:value string}) on ${3:class}",
       "$0"
     ],
-    "description": "Declare a typed Go++ annotation"
+    "description": "Declare a typed GPP annotation"
   },
   "Annotation use": {
     "prefix": "@",
     "body": [
       "@{${1:Annotation}}$0"
     ],
-    "description": "Apply a Go++ annotation"
+    "description": "Apply a GPP annotation"
   },
   "Try catch": {
     "prefix": "try",
@@ -161,7 +161,7 @@
       "\t${2:handle}",
       "}"
     ],
-    "description": "Create a Go++ try/catch block"
+    "description": "Create a GPP try/catch block"
   },
   "HTTP generic request binding": {
     "prefix": "http-bind",
@@ -177,7 +177,7 @@
     "prefix": "http-html",
     "body": [
       "func ${1:Preview}(ctx *http.Context) error @{http.GET(\"${2:/preview}\")} {",
-      "\treturn ctx.HTML(200, ${3:\"Hello, Go++\"})",
+      "\treturn ctx.HTML(200, ${3:\"Hello, GPP\"})",
       "}"
     ],
     "description": "Return an HTML response from an annotated HTTP route"
@@ -187,20 +187,20 @@
     "body": [
       "record(${1:Field}: ${2:value})$0"
     ],
-    "description": "Create an anonymous Go++ record literal"
+    "description": "Create an anonymous GPP record literal"
   },
   "Safe access": {
     "prefix": "safe",
     "body": [
       "${1:value}?.${2:Member}$0"
     ],
-    "description": "Create an explicit Go++ safe member access"
+    "description": "Create an explicit GPP safe member access"
   },
   "Lambda": {
     "prefix": "lambda",
     "body": [
       "${1:value} => ${2:expression}$0"
     ],
-    "description": "Create a Go++ lambda expression"
+    "description": "Create a GPP lambda expression"
   }
 }

@@ -1,8 +1,8 @@
 {
   "name": "telga-goplusplus-vscode",
-  "displayName": "Go++ Programming Language",
-  "description": "Syntax highlighting and editor support for Go++ files.",
-  "version": "0.1.7",
+  "displayName": "GPP Programming Language",
+  "description": "Syntax highlighting and editor support for GPP files.",
+  "version": "0.1.9",
   "publisher": "telgatech",
   "license": "BSD-3-Clause",
   "repository": {
@@ -29,38 +29,38 @@
     "commands": [
       {
         "command": "gpp.formatDocument",
-        "title": "Go++: Format Document",
-        "category": "Go++"
+        "title": "GPP: Format Document",
+        "category": "GPP"
       },
       {
         "command": "gpp.runProject",
-        "title": "Go++: Run Project",
-        "category": "Go++"
+        "title": "GPP: Run Project",
+        "category": "GPP"
       },
       {
         "command": "gpp.buildProject",
-        "title": "Go++: Build Project",
-        "category": "Go++"
+        "title": "GPP: Build Project",
+        "category": "GPP"
       },
       {
         "command": "gpp.testProject",
-        "title": "Go++: Test Project",
-        "category": "Go++"
+        "title": "GPP: Test Project",
+        "category": "GPP"
       },
       {
         "command": "gpp.showOutput",
-        "title": "Go++: Show Output",
-        "category": "Go++"
+        "title": "GPP: Show Output",
+        "category": "GPP"
       },
       {
         "command": "gpp.organizeImports",
-        "title": "Go++: Organize Imports",
-        "category": "Go++"
+        "title": "GPP: Organize Imports",
+        "category": "GPP"
       },
       {
         "command": "gpp.getDiagnostics",
-        "title": "Go++: Refresh Diagnostics",
-        "category": "Go++"
+        "title": "GPP: Refresh Diagnostics",
+        "category": "GPP"
       }
     ],
     "menus": {
@@ -75,6 +75,7 @@
     "configurationDefaults": {
       "[gpp]": {
         "editor.defaultFormatter": "telgatech.telga-goplusplus-vscode",
+        "editor.formatOnSave": true,
         "editor.inlayHints.enabled": "off",
         "editor.quickSuggestions": {
           "other": true,
@@ -89,9 +90,7 @@
       {
         "id": "gpp",
         "aliases": [
-          "Go++",
-          "go++",
-          "gpp"
+          "GPP"
         ],
         "extensions": [
           ".gpp",
@@ -108,17 +107,17 @@
       }
     ],
     "configuration": {
-      "title": "Go++",
+      "title": "GPP",
       "properties": {
         "gpp.lsp.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable the Go++ language server for diagnostics and editor features."
+          "description": "Enable the GPP language server for diagnostics and editor features."
         },
         "gpp.lsp.command": {
           "type": "string",
           "default": "~/go/bin/gpp",
-          "description": "Go++ executable used for the language server and document formatting."
+          "description": "GPP executable used for the language server and document formatting."
         },
         "gpp.lsp.args": {
           "type": "array",
@@ -128,7 +127,7 @@
           "default": [
             "lsp"
           ],
-          "description": "Arguments passed to the Go++ language-server command."
+          "description": "Arguments passed to the GPP language-server command."
         }
       }
     },

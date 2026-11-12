@@ -58,7 +58,7 @@ class GppLanguageServer {
     this.process.on("error", (error) => this.fail(error));
     this.process.on("close", (code, signal) => {
       if (!this.disposed && !this.reportedFailure) {
-        this.fail(new Error(`Go++ language server exited (${code ?? signal ?? "unknown"})`));
+        this.fail(new Error(`GPP language server exited (${code ?? signal ?? "unknown"})`));
       }
     });
 
@@ -117,10 +117,10 @@ class GppLanguageServer {
           codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ["quickfix", "source.fixAll", "source.organizeImports", "refactor"] } }, dataSupport: true }
         }
       },
-      clientInfo: { name: "Go++ VS Code", version: extensionVersion }
+      clientInfo: { name: "GPP VS Code", version: extensionVersion }
     });
     if (!result) {
-      throw new Error("Go++ language server returned no initialization result");
+      throw new Error("GPP language server returned no initialization result");
     }
     this.initialized = true;
     const serverInfo = result.serverInfo;
@@ -204,7 +204,7 @@ class GppLanguageServer {
 
   request(method, params, cancellationToken) {
     if (!this.process || this.process.killed || this.disposed) {
-      return Promise.reject(new Error("Go++ language server is unavailable"));
+      return Promise.reject(new Error("GPP language server is unavailable"));
     }
     const id = this.nextRequestId++;
     return new Promise((resolve, reject) => {
@@ -221,7 +221,7 @@ class GppLanguageServer {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
-        pending.reject(new Error(`Go++ language server timed out handling ${method}`));
+        pending.reject(new Error(`GPP language server timed out handling ${method}`));
       }, 30000);
       this.pending.set(id, {
         resolve: (value) => { cleanup(); resolve(value); },
@@ -239,7 +239,7 @@ class GppLanguageServer {
       if (!this.write({ jsonrpc: "2.0", id, method, params })) {
         this.pending.delete(id);
         cleanup();
-        reject(new Error("Go++ language server input is unavailable"));
+        reject(new Error("GPP language server input is unavailable"));
       }
     });
   }
@@ -306,7 +306,7 @@ class GppLanguageServer {
     const pending = this.pending.get(message.id);
     if (!pending) return;
     this.pending.delete(message.id);
-    if (message.error) pending.reject(new Error(message.error.message || "Go++ language server request failed"));
+    if (message.error) pending.reject(new Error(message.error.message || "GPP language server request failed"));
     else pending.resolve(message.result);
   }
 
@@ -320,8 +320,8 @@ class GppLanguageServer {
         this.outputChannel.appendLine(`[gpp lsp] ${params.message || ""}`);
         return;
       case "window/showMessage":
-        if (params.type === 1) vscode.window.showErrorMessage(params.message || "Go++ language server error");
-        else if (params.type === 2) vscode.window.showWarningMessage(params.message || "Go++ language server warning");
+        if (params.type === 1) vscode.window.showErrorMessage(params.message || "GPP language server error");
+        else if (params.type === 2) vscode.window.showWarningMessage(params.message || "GPP language server warning");
         return;
       case "workspace/configuration":
         this.write({
@@ -358,10 +358,10 @@ class GppLanguageServer {
     const value = params.value || {};
     if (value.kind === "begin") {
       this.progress.get(key)?.dispose();
-      this.progress.set(key, vscode.window.setStatusBarMessage(`Go++: ${value.title || "Working"}`));
+      this.progress.set(key, vscode.window.setStatusBarMessage(`GPP: ${value.title || "Working"}`));
     } else if (value.kind === "report") {
       this.progress.get(key)?.dispose();
-      this.progress.set(key, vscode.window.setStatusBarMessage(`Go++: ${value.message || "Working"}`));
+      this.progress.set(key, vscode.window.setStatusBarMessage(`GPP: ${value.message || "Working"}`));
     } else if (value.kind === "end") {
       this.progress.get(key)?.dispose();
       this.progress.delete(key);
@@ -520,11 +520,11 @@ class GppLanguageServer {
     for (const { reject } of this.pending.values()) reject(error);
     this.pending.clear();
     const message = error.code === "ENOENT"
-      ? "The gpp executable was not found. Install Go++ or set gpp.lsp.command to its path."
+      ? "The gpp executable was not found. Install GPP or set gpp.lsp.command to its path."
       : error.message;
     const output = this.lastServerOutput ? ` (${this.lastServerOutput})` : "";
     this.outputChannel.appendLine(`Language server unavailable: ${message}${output}`);
-    vscode.window.showWarningMessage(`Go++ language server unavailable: ${message}${output}`);
+    vscode.window.showWarningMessage(`GPP language server unavailable: ${message}${output}`);
   }
 
   dispose() {
@@ -549,7 +549,7 @@ class GppLanguageServer {
     for (const progress of this.progress.values()) progress.dispose();
     this.progress.clear();
     for (const [id, pending] of this.pending.entries()) {
-      if (id !== shutdownId) pending.reject(new Error("Go++ language server stopped"));
+      if (id !== shutdownId) pending.reject(new Error("GPP language server stopped"));
     }
     if (!shouldShutdown) {
       this.pending.clear();
@@ -662,7 +662,7 @@ function toWorkspaceEdit(value) {
 
 function toCodeLensCommand(command, fallbackUri) {
   return {
-    title: command.title || "Go++ references",
+    title: command.title || "GPP references",
     command: command.command,
     arguments: (command.arguments || []).map((argument) => {
       if (!argument || typeof argument !== "object" || !("position" in argument) && !argument.locations) return argument;
@@ -703,6 +703,7 @@ function registerLanguageFeatures(context, server) {
     { pattern: "**/*.gpp.tpl" }
   ];
   const pendingCompletions = new Map();
+  const tracedMemberCompletions = new Set();
   const completionPayloads = new WeakMap();
   const codeActionPayloads = new WeakMap();
   const workspaceSymbolPayloads = new WeakMap();
@@ -712,9 +713,15 @@ function registerLanguageFeatures(context, server) {
 
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(selector, {
-      provideCompletionItems(document, position, _completionContext, token) {
+      provideCompletionItems(document, position, token, _completionContext) {
         if (token.isCancellationRequested) return [];
         const key = document.uri.toString();
+        const prefix = document.lineAt(position.line).text.slice(0, position.character);
+        const isMemberCompletion = /[.@]\s*$/.test(prefix);
+        if (isMemberCompletion && !tracedMemberCompletions.has(key)) {
+          tracedMemberCompletions.add(key);
+          server.outputChannel.appendLine(`Member completion provider entered for ${document.uri}.`);
+        }
         const previous = pendingCompletions.get(key);
         if (previous) {
           clearTimeout(previous.timer);
@@ -730,6 +737,7 @@ function registerLanguageFeatures(context, server) {
             clearTimeout(pending.timer);
             pendingCompletions.delete(key);
             pending.subscription?.dispose();
+            if (isMemberCompletion) server.outputChannel.appendLine(`Member completion canceled before dispatch for ${document.uri}.`);
             resolve([]);
           };
           pending.subscription = token.onCancellationRequested(cancel);
@@ -743,6 +751,7 @@ function registerLanguageFeatures(context, server) {
               position: toLspPosition(position)
             }, token).then((result) => {
               const normalized = normalizeCompletionResult(result);
+              if (isMemberCompletion) server.outputChannel.appendLine(`Member completion received ${normalized.items.length} item(s) for ${document.uri}.`);
               const completions = normalized.items.map((item) => {
                 const completion = new vscode.CompletionItem(item.label, toCompletionItemKind(item.kind));
                 completionPayloads.set(completion, item);
@@ -751,7 +760,14 @@ function registerLanguageFeatures(context, server) {
                 completion.deprecated = Boolean(item.deprecated);
                 completion.data = item.data;
                 if (item.sortText) completion.sortText = item.sortText;
-                if (item.filterText) completion.filterText = item.filterText;
+                if (item.filterText) {
+                  completion.filterText = item.filterText;
+                } else if (isMemberCompletion && item.textEdit?.range?.start?.line === position.line && item.textEdit.range.start.character < position.character) {
+                  const leadingText = document.getText(new vscode.Range(toPosition(item.textEdit.range.start), position));
+                  if (leadingText && !String(item.label).startsWith(leadingText)) {
+                    completion.filterText = `${leadingText}${item.label}`;
+                  }
+                }
                 const insertText = item.textEdit?.newText ?? item.insertText ?? item.label;
                 if (item.insertTextFormat === 2) completion.insertText = new vscode.SnippetString(insertText);
                 else if (insertText !== undefined) completion.insertText = insertText;
@@ -766,6 +782,7 @@ function registerLanguageFeatures(context, server) {
                 : completions;
             }).then(resolve, (error) => {
               if (token.isCancellationRequested || error instanceof vscode.CancellationError) {
+                if (isMemberCompletion) server.outputChannel.appendLine(`Member completion canceled while awaiting the server for ${document.uri}.`);
                 resolve([]);
                 return;
               }
@@ -806,7 +823,7 @@ function registerLanguageFeatures(context, server) {
           const completion = new vscode.InlineCompletionItem(insertText, item.range ? toRange(item.range) : undefined);
           completion.filterText = item.filterText;
           if (item.command?.command) completion.command = {
-            title: item.command.title || "Go++ completion",
+            title: item.command.title || "GPP completion",
             command: item.command.command,
             arguments: item.command.arguments || []
           };
@@ -1150,7 +1167,7 @@ function registerLanguageFeatures(context, server) {
           range: toLspRange(range),
           context: { diagnostics, only }
         }, token).then((actions) => (actions || []).map((action) => {
-          const codeAction = new vscode.CodeAction(action.title || "Go++ action", new vscode.CodeActionKind(action.kind || "quickfix"));
+          const codeAction = new vscode.CodeAction(action.title || "GPP action", new vscode.CodeActionKind(action.kind || "quickfix"));
           codeActionPayloads.set(codeAction, action);
           codeAction.isPreferred = Boolean(action.isPreferred);
           codeAction.diagnostics = context.diagnostics.filter((diagnostic) =>
@@ -1159,13 +1176,13 @@ function registerLanguageFeatures(context, server) {
           if (workspaceEditHasChanges(action.edit)) codeAction.edit = toWorkspaceEdit(action.edit);
           if (typeof action.command === "string") {
             codeAction.command = {
-              title: action.title || "Go++ action",
+              title: action.title || "GPP action",
               command: action.command,
               arguments: action.arguments || []
             };
           } else if (action.command?.command) {
             codeAction.command = {
-              title: action.command.title || action.title || "Go++ action",
+              title: action.command.title || action.title || "GPP action",
               command: action.command.command,
               arguments: action.command.arguments || []
             };
@@ -1184,7 +1201,7 @@ function registerLanguageFeatures(context, server) {
           codeAction.isPreferred = Boolean(resolved.isPreferred);
           if (workspaceEditHasChanges(resolved.edit)) codeAction.edit = toWorkspaceEdit(resolved.edit);
           if (resolved.command?.command) codeAction.command = {
-            title: resolved.command.title || resolved.title || "Go++ action",
+            title: resolved.command.title || resolved.title || "GPP action",
             command: resolved.command.command,
             arguments: resolved.command.arguments || []
           };
@@ -1262,7 +1279,7 @@ function registerLanguageFeatures(context, server) {
       }
     }, "}", "\n"),
     vscode.languages.registerSignatureHelpProvider(selector, {
-      provideSignatureHelp(document, position, _context, token) {
+      provideSignatureHelp(document, position, token, _context) {
         server.flushChange(document);
         return server.requestWhenReady("textDocument/signatureHelp", {
           textDocument: { uri: document.uri.toString() },
@@ -1308,11 +1325,11 @@ function registerLanguageFeatures(context, server) {
     vscode.commands.registerCommand("gpp.organizeImports", async () => {
       const document = vscode.window.activeTextEditor?.document;
       if (!document || !isGoPlusDocument(document)) {
-        vscode.window.showInformationMessage("Open a Go++ document to organize imports.");
+        vscode.window.showInformationMessage("Open a GPP document to organize imports.");
         return;
       }
       if (!server.serverCapabilities.executeCommandProvider?.commands?.includes("gpp.organizeImports")) {
-        vscode.window.showWarningMessage("The Go++ language server does not support organize imports.");
+        vscode.window.showWarningMessage("The GPP language server does not support organize imports.");
         return;
       }
       server.flushChange(document);
@@ -1322,17 +1339,17 @@ function registerLanguageFeatures(context, server) {
         });
         if (edit) await vscode.workspace.applyEdit(toWorkspaceEdit(edit));
       } catch (error) {
-        vscode.window.showErrorMessage(`Go++ organize imports failed: ${error.message}`);
+        vscode.window.showErrorMessage(`GPP organize imports failed: ${error.message}`);
       }
     }),
     vscode.commands.registerCommand("gpp.getDiagnostics", async () => {
       const document = vscode.window.activeTextEditor?.document;
       if (!document || !isGoPlusDocument(document)) {
-        vscode.window.showInformationMessage("Open a Go++ document to refresh diagnostics.");
+        vscode.window.showInformationMessage("Open a GPP document to refresh diagnostics.");
         return;
       }
       if (!server.serverCapabilities.executeCommandProvider?.commands?.includes("gpp.getDiagnostics")) {
-        vscode.window.showWarningMessage("The Go++ language server does not support refreshing diagnostics.");
+        vscode.window.showWarningMessage("The GPP language server does not support refreshing diagnostics.");
         return;
       }
       server.flushChange(document);
@@ -1343,7 +1360,7 @@ function registerLanguageFeatures(context, server) {
         if (diagnostics) server.diagnostics.set(document.uri, server.toDiagnostics(diagnostics));
         await vscode.commands.executeCommand("workbench.actions.view.problems");
       } catch (error) {
-        vscode.window.showErrorMessage(`Go++ diagnostics request failed: ${error.message}`);
+        vscode.window.showErrorMessage(`GPP diagnostics request failed: ${error.message}`);
       }
     })
   );
@@ -1358,7 +1375,7 @@ function registerLanguageFeatures(context, server) {
         await vscode.workspace.applyEdit(workspaceEdit);
       }
     } catch (error) {
-      vscode.window.showErrorMessage(`Go++ formatting failed: ${error.message}`);
+      vscode.window.showErrorMessage(`GPP formatting failed: ${error.message}`);
     }
   }));
 }
@@ -1384,7 +1401,7 @@ function registerProjectCommands(context, outputChannel) {
       const activeFolder = document && vscode.workspace.getWorkspaceFolder(document.uri);
       const folder = activeFolder || vscode.workspace.workspaceFolders?.[0];
       if (!folder && !document) {
-        vscode.window.showErrorMessage("Open a Go++ project or source file first.");
+        vscode.window.showErrorMessage("Open a GPP project or source file first.");
         return;
       }
       const dirtySources = vscode.workspace.textDocuments.filter((source) => isGoPlusDocument(source) && source.isDirty);
@@ -1397,8 +1414,8 @@ function registerProjectCommands(context, outputChannel) {
       const task = new vscode.Task(
         { type: "shell" },
         folder || vscode.TaskScope.Workspace,
-        `Go++ ${action} Project`,
-        "Go++",
+        `GPP ${action} Project`,
+        "GPP",
         new vscode.ProcessExecution(executable, [action.toLowerCase(), target], { cwd })
       );
       if (group) task.group = group;
@@ -1412,7 +1429,7 @@ function registerProjectCommands(context, outputChannel) {
         await vscode.tasks.executeTask(task);
       } catch (error) {
         outputChannel.appendLine(`Could not start gpp ${action.toLowerCase()}: ${error.message}`);
-        vscode.window.showErrorMessage(`Could not start Go++ ${action.toLowerCase()}: ${error.message}`);
+        vscode.window.showErrorMessage(`Could not start GPP ${action.toLowerCase()}: ${error.message}`);
       }
     }));
   }
@@ -1505,7 +1522,7 @@ function toDocumentSymbol(symbol, uri) {
 }
 
 function activate(context) {
-  const outputChannel = vscode.window.createOutputChannel("Go++");
+  const outputChannel = vscode.window.createOutputChannel("GPP");
   context.subscriptions.push(outputChannel);
   const server = new GppLanguageServer(outputChannel);
   context.subscriptions.push(server);

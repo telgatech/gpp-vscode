@@ -4,6 +4,20 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
+TARGET="${1:-build}"
+case "$TARGET" in
+  clean)
+    rm -rf build
+    exit 0
+    ;;
+  build)
+    ;;
+  *)
+    printf 'Unknown target: %s\nUsage: %s [build|clean]\n' "$TARGET" "$0" >&2
+    exit 2
+    ;;
+esac
+
 if ! command -v vsce >/dev/null 2>&1; then
   printf '%s\n' 'vsce is required. Install it with: npm install --global @vscode/vsce' >&2
   exit 1
